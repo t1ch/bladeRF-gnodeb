@@ -1,0 +1,13 @@
+set modelsim 0
+
+# GNODEB IP files
+source [file normalize [file join $::quartus(qip_path) ../common/gnodeb_files.tcl]]
+
+
+foreach f $gnodeb_synthesis_tx {
+    set_global_assignment -library "gnodeb" -name VHDL_FILE [file normalize [file join $::quartus(qip_path) $f]] -hdl_version VHDL_2008
+}
+
+foreach f $gnodeb_synthesis_top {
+    set_global_assignment -library "gnodeb" -name VHDL_FILE [file normalize [file join $::quartus(qip_path) $f]] -hdl_version VHDL_2008
+}

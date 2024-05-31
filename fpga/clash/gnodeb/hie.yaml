@@ -1,0 +1,12 @@
+cradle:
+  cabal:
+    - path: "./src"
+      component: "lib:gnodeb"
+    - path: "./tests/doctests.hs"
+      component: "gnodeb:doctests"
+    - path: "./tests"
+      component: "gnodeb:test-library"
+    - path: "./bin/Clashi.hs"
+      component: "gnodeb:exe:clashi"
+    - path: "./bin/Clash.hs"
+      component: "gnodeb:exe:clash"
