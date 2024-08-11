@@ -1,5 +1,5 @@
 # bladeRF-gnodeb
-The bladeRF-gnodeb project is an open-source LTE gNodeB modem. The modem modulates and demodulates New Radio traffic directly on the bladeRF 2.0 micro xA9’s FPGA. The bladeRF-gnodeb coupled with a FAPI compatible MAC allows the bladeRF 2.0 micro xA9 to become a software defined radio gNodeB.
+The bladeRF-gnodeb project is an open-source New Radio gNodeB modem. The modem modulates and demodulates New Radio traffic directly on the bladeRF 2.0 micro xA9’s FPGA. The bladeRF-gnodeb coupled with a FAPI compatible MAC allows the bladeRF 2.0 micro xA9 to become a software defined radio gNodeB.
 
 ## Milestones
 #### 5G New Radio Downlink TX:
