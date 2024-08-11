@@ -2,7 +2,7 @@
 -- our code to be warning-free.
 {-# OPTIONS_GHC -Wno-orphans #-}
 
-module Example.Project where
+module GnodeB.Project where
 
 import Clash.Prelude
 
