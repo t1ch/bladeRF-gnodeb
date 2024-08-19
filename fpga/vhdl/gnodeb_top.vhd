@@ -28,6 +28,7 @@ architecture simple of gnodeb_top is
     read_dwords : integer;
     transport_block_dwords : integer;
     data : std_logic_vector(31 downto 0);
+    leds : std_logic_vector(2 downto 0);
   end record;
   signal current_tx_state, future_tx_state          :  state_tx_t ;
   attribute keep: boolean;
@@ -45,6 +46,7 @@ begin
   rv.read_dwords := 0;
   rv.transport_block_dwords := 0;
   rv.data := (others => '0');
+  rv.leds := (others => '1');
   return rv ;
 end function ;
 
@@ -53,15 +55,15 @@ begin
 tx_packet_ready <= '1' when (current_tx_state.ready_for_packet = '1' ) else '0' ;
 
 -- LEDs are active low
-tx_leds <= "000" when (current_tx_state.fsm = IDLE) else
-           "001" when (current_tx_state.fsm = WAIT_FOR_SOP) else
-           "010" when (current_tx_state.fsm = WAIT_TO_READ_TRANSPORT_BLOCK) else
-           "011" when (current_tx_state.fsm = READ_TRANSPORT_BLOCK) else
-           "100" when (current_tx_state.fsm = FINISH_TRANSPORT_BLOCK) else
-           "101" when (current_tx_state.fsm = DONE) else
-           "110" when (current_tx_state.fsm = ERR) else
-           "111";
-
+-- tx_leds <= "000" when (current_tx_state.fsm = IDLE) else
+--            "001" when (current_tx_state.fsm = WAIT_FOR_SOP) else
+--            "010" when (current_tx_state.fsm = WAIT_TO_READ_TRANSPORT_BLOCK) else
+--            "011" when (current_tx_state.fsm = READ_TRANSPORT_BLOCK) else
+--            "100" when (current_tx_state.fsm = FINISH_TRANSPORT_BLOCK) else
+--            "101" when (current_tx_state.fsm = DONE) else
+--            "110" when (current_tx_state.fsm = ERR) else
+--            "111";
+tx_leds <= current_tx_state.leds;
 tx_state_comb : process(all)
 begin
   future_tx_state <= current_tx_state;
@@ -93,9 +95,12 @@ begin
     when READ_TRANSPORT_BLOCK =>
       if(current_tx_state.read_dwords <= current_tx_state.transport_block_dwords) then
         future_tx_state.data <= tx_packet_control.data;
+        future_tx_state.leds <= tx_packet_control.data(2 downto 0);
         future_tx_state.read_dwords <= current_tx_state.read_dwords + 1;
       else
-        future_tx_state.fsm <= FINISH_TRANSPORT_BLOCK;
+        --future_tx_state.fsm <= FINISH_TRANSPORT_BLOCK;
+        future_tx_state.fsm <= DONE;
+
       end if;
 
     when FINISH_TRANSPORT_BLOCK =>
