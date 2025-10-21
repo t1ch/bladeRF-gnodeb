@@ -1,5 +1,5 @@
 packages:
-  gnodeb.cabal
+  clash.cabal
 
 write-ghc-environment-files: always
 

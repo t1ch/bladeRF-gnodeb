@@ -4,5 +4,5 @@ import System.Environment (getArgs)
 import Test.DocTest (mainFromCabal)
 
 main :: IO ()
-main = mainFromCabal "gnodeb" =<< getArgs
+main = mainFromCabal "clash" =<< getArgs
 

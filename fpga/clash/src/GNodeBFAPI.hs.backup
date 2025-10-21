@@ -1,0 +1,162 @@
+{-# language FlexibleContexts #-}
+{-# language MultiParamTypeClasses #-}
+
+module GNodeBFAPI where
+
+import Clash.Prelude
+import GHC.Generics (Generic)
+
+type TxDom = System
+type RxDom = System
+
+-- Minimal state - just track if we've seen packets
+data DebugState = DebugState
+  { packetSeen :: Bool
+  , sopCount   :: Unsigned 32
+  , validCount :: Unsigned 32
+  } deriving (Generic, NFDataX, Eq, Show)
+
+initialDebugState :: DebugState
+initialDebugState = DebugState
+  { packetSeen = False
+  , sopCount   = 0
+  , validCount = 0
+  }
+
+-- Simple packet detector
+detectPacket :: DebugState
+             -> (Bit, Bit, BitVector 32, Bit, Bit)  -- (sop, eop, data, valid, empty)
+             -> (DebugState, Bool)                   -- (new state, packet detected)
+detectPacket state (sop, eop, pktData, valid, empty) =
+  let
+    -- Count SOP signals
+    newSopCount = if sop == 1 then sopCount state + 1 else sopCount state
+
+    -- Count valid signals
+    newValidCount = if valid == 1 then validCount state + 1 else validCount state
+
+    -- Packet detected if we see SOP or valid data
+    detected = (sop == 1) || (valid == 1)
+
+    newState = DebugState
+      { packetSeen = packetSeen state || detected
+      , sopCount   = newSopCount
+      , validCount = newValidCount
+      }
+  in
+    (newState, detected)
+
+-- Top entity - minimal version
+{-# ANN topEntity
+  ( Synthesize
+      { t_name = "gnodeb_fapi_top"
+      , t_inputs =
+          [ PortName "rx_clock"
+          , PortName "rx_reset"
+          , PortName "rx_enable"
+          , PortName "rx_packet_ready"
+          , PortName "tx_clock"
+          , PortName "tx_reset"
+          , PortName "tx_enable"
+          , PortName "tx_pkt_sop"
+          , PortName "tx_pkt_eop"
+          , PortName "tx_pkt_data"
+          , PortName "tx_pkt_data_valid"
+          , PortName "tx_packet_empty"
+          ]
+      , t_output =
+          PortProduct ""
+            [ PortName "rx_pkt_sop"
+            , PortName "rx_pkt_eop"
+            , PortName "rx_pkt_data"
+            , PortName "rx_pkt_data_valid"
+            , PortName "tx_packet_ready"
+            , PortName "leds"
+            ]
+      }
+  ) #-}
+
+topEntity ::
+  -- RX domain inputs
+  Clock RxDom ->
+  Reset RxDom ->
+  Signal RxDom Bit ->
+  Signal RxDom Bit ->
+  -- TX domain inputs
+  Clock TxDom ->
+  Reset TxDom ->
+  Signal TxDom Bit ->
+  -- TX packet inputs (PDUs from Host to FPGA)
+  Signal TxDom Bit ->
+  Signal TxDom Bit ->
+  Signal TxDom (BitVector 32) ->
+  Signal TxDom Bit ->
+  Signal TxDom Bit ->
+  -- Outputs
+  ( Signal RxDom Bit              -- rx_pkt_sop
+  , Signal RxDom Bit              -- rx_pkt_eop
+  , Signal RxDom (BitVector 32)   -- rx_pkt_data
+  , Signal RxDom Bit              -- rx_pkt_data_valid
+  , Signal TxDom Bit              -- tx_packet_ready
+  , Signal TxDom (Vec 3 Bit)      -- leds (active low)
+  )
+topEntity rxClk rxRst rxEna rxPktReady
+          txClk txRst txEna
+          txSop txEop txData txValid txEmpty =
+  (rxSop, rxEop, rxData, rxValid, txReady, leds)
+ where
+  -- TX domain enable
+  txEnable = toEnable (bitToBool <$> txEna)
+
+  -- Bundle TX inputs
+  txInputs = bundle (txSop, txEop, txData, txValid, txEmpty)
+
+  -- Simple state machine - just detect packets
+  debugStateOut = withClockResetEnable txClk txRst txEnable $
+    mealy debugStateMachine initialDebugState txInputs
+
+  (debugState', packetDetected) = unbundle debugStateOut
+
+  debugStateMachine :: DebugState
+                     -> (Bit, Bit, BitVector 32, Bit, Bit)
+                     -> (DebugState, (DebugState, Bit))
+  debugStateMachine state inputs =
+    let (newState, detected) = detectPacket state inputs
+    in (newState, (newState, boolToBit detected))
+
+  -- TX always ready
+  txReady = pure 1
+
+  -- No RX packets for now
+  rxSop   = pure 0
+  rxEop   = pure 0
+  rxData  = pure 0
+  rxValid = pure 0
+
+  -- LED Logic - All LEDs ON (0 = active low) when packet seen
+  -- LED0: Immediate indicator - turns on with any packet activity
+  led0 :: Signal TxDom Bit
+  led0 = withClockResetEnable txClk txRst txEnable $
+    register 1 $ mux (packetDetected .==. 1)
+                     (pure 0)  -- Turn LED ON (active low)
+                     led0      -- Keep current state
+
+  -- LED1: Latched indicator - stays on once any packet seen
+  led1 :: Signal TxDom Bit
+  led1 = withClockResetEnable txClk txRst txEnable $
+    register 1 $ mux (packetSeen <$> debugState')
+                     (pure 0)  -- ON if we've ever seen a packet
+                     (pure 1)  -- OFF initially
+
+  -- LED2: Blink counter - toggles every N packets
+  led2 :: Signal TxDom Bit
+  led2 = withClockResetEnable txClk txRst txEnable $
+    register 1 $ (\s -> if sopCount s > 0
+                        then if (sopCount s .&. 0x1) == 0
+                             then 0  -- Even count = ON
+                             else 1  -- Odd count = OFF
+                        else 1) <$> debugState'
+
+  -- Combine LEDs
+  leds :: Signal TxDom (Vec 3 Bit)
+  leds = (\l0 l1 l2 -> l0 :> l1 :> l2 :> Nil) <$> led0 <*> led1 <*> led2

@@ -11,7 +11,7 @@ This starter project contains the scaffolding needed to integrate Clash with the
   - [REPL](#repl)
   - [IDE support](#ide-support)
 - [Project overview](#project-overview)
-  - [gnodeb.cabal](#namecabal)
+  - [clash.cabal](#namecabal)
   - [cabal.project](#cabalproject)
   - [stack.yaml](#stackyaml)
   - [src/](#src)
@@ -97,7 +97,7 @@ We currently recommend Visual Studio Code in combination with the _Haskell_ plug
 This section will give a tour of all the files present in this starter project. It's also a general introduction into Clash dependency management. It's not an introduction to Clash itself though. If you're looking for an introduction to Clash, read ["Clash.Tutorial" on Hackage](https://hackage.haskell.org/package/clash-prelude).
 
 ```
-gnodeb
+clash
 ├── bin
 │   ├── Clash.hs
 │   └── Clashi.hs
@@ -111,20 +111,20 @@ gnodeb
 │   ├── doctests.hs
 │   └── unittests.hs
 ├── cabal.project
-├── gnodeb.cabal
+├── clash.cabal
 └── stack.yaml
 ```
 
-## gnodeb.cabal
+## clash.cabal
 This is the most important file in your project. It describes how to build your project. Even though it ends in `.cabal`, Stack will use this file too. It starts of with meta-information:
 
 ```yaml
 cabal-version:       2.4
-name:                gnodeb
+name:                clash
 version:             0.1
 license:             BSD-2-Clause
-author:              Tich Kadzinga <tich@kadzinga.com>
-maintainer:          Tich Kadzinga <tich@kadinga.com>
+author:              John Smith <john@example.com>
+maintainer:          John Smith <john@example.com>
 ```
 
 If you decide to publish your code on [Hackage](https://hackage.haskell.org/), this will show up on your package's front page. Take note of the license, it's set to `BSD-2-Clause` by default, but this might bee too liberal for your project. You can use any of the licenses on [spdx.org/licenses](https://spdx.org/licenses/). If none of those suit, remove the `license` line, add `license-file: LICENSE`, and add a `LICENSE` file of your choice to the root of this project. Moving on:
@@ -152,7 +152,7 @@ Note that this whole section is a `common` "stanza". We'll use it as a template 
     Cabal,
 
     -- clash-prelude will set suitable version bounds for the plugins
-    clash-prelude >= 1.8.1 && < 1.10,
+    clash-prelude >= 1.8.2 && < 1.10,
     ghc-typelits-natnormalise,
     ghc-typelits-extra,
     ghc-typelits-knownnat
@@ -180,7 +180,7 @@ test-suite doctests
   hs-source-dirs:   tests
   build-depends:
     base,
-    gnodeb,
+    clash,
     doctest-parallel >= 0.2 && < 0.4,
 ```
 
@@ -197,10 +197,10 @@ test-suite test-library
   other-modules:
     Tests.Example.Project
   build-depends:
-    gnodeb,
+    clash,
     QuickCheck,
     hedgehog,
-    tasty >= 1.2 && < 1.5,
+    tasty >= 1.2 && < 1.6,
     tasty-hedgehog,
     tasty-th
 ```
@@ -212,7 +212,7 @@ A `cabal.project` file is used to configure details of the build, more info can 
 
 ```haskell
 packages:
-  gnodeb.cabal
+  clash.cabal
 
 write-ghc-environment-files: always
 ```
@@ -231,10 +231,10 @@ includes Clash 1.6.4. Snapshots tightly couple GHC and package versions. By
 working this way, Stack projects build on a cohesive set of packages. Plus, it
 guarantees that if a `stack build` works now, it will work in 10 years too.
 
-Note: If you need a newer Clash version, simply change the version bounds in `gnodeb.cabal` and follow the hints given by Stack.
+Note: If you need a newer Clash version, simply change the version bounds in `clash.cabal` and follow the hints given by Stack.
 
 ## src/
-This is where the source code of the project lives, as specified in `gnodeb.cabal`. It contains a single file, `Example/Project.hs` which starts with:
+This is where the source code of the project lives, as specified in `clash.cabal`. It contains a single file, `Example/Project.hs` which starts with:
 
 ```haskell
 module Example.Project (topEntity, plus) where
@@ -249,7 +249,7 @@ plus :: Signed 8 -> Signed 8 -> Signed 8
 plus a b = a + b
 ```
 
-`gnodeb.cabal` enabled `NoImplicitPrelude` which enables the use of `Clash.Prelude` here. Next, a function `plus` is defined. It simply adds two numbers. Note that the example (`>>> plus 3 5`) gets executed by the _doctests_ defined for this project and checked for consistency with the result in the documentation (`8`).
+`clash.cabal` enabled `NoImplicitPrelude` which enables the use of `Clash.Prelude` here. Next, a function `plus` is defined. It simply adds two numbers. Note that the example (`>>> plus 3 5`) gets executed by the _doctests_ defined for this project and checked for consistency with the result in the documentation (`8`).
 
 ```haskell
 -- | 'topEntity' is Clash's equivalent of 'main' in other programming
@@ -314,4 +314,4 @@ All 1 tests passed (0.00s)
 ```
 
 # Change the license
-By default `gnodeb.cabal` sets its `license` field to `BSD-2-Clause`. You might want to change this.
+By default `clash.cabal` sets its `license` field to `BSD-2-Clause`. You might want to change this.

@@ -1,9 +1,9 @@
 cabal-version:       2.4
-name:                gnodeb
+name:                clash
 version:             0.1
-license:             GPL3
-author:              Tichaona Kadzinga <tichaona@kadzinga.com>
-maintainer:          Tichaona Kadzinga <tichaona@kadzinga.com>
+license:             BSD-2-Clause
+author:              John Smith <john@example.com>
+maintainer:          John Smith <john@example.com>
 
 common common-options
   default-extensions:
@@ -75,7 +75,7 @@ common common-options
     Cabal,
 
     -- clash-prelude will set suitable version bounds for the plugins
-    clash-prelude >= 1.8.1 && < 1.10,
+    clash-prelude >= 1.8.2 && < 1.10,
     ghc-typelits-natnormalise,
     ghc-typelits-extra,
     ghc-typelits-knownnat
@@ -85,24 +85,24 @@ library
   import: common-options
   hs-source-dirs: src
   exposed-modules:
-    GnodeB.Project
+    GNodeBFAPI
   default-language: Haskell2010
 
--- Builds the executable 'clash', with gnodeb project in scope
+-- Builds the executable 'clash', with clash project in scope
 executable clash
   main-is: bin/Clash.hs
   default-language: Haskell2010
-  Build-Depends: base, clash-ghc, gnodeb
+  Build-Depends: base, clash-ghc, clash
   if !os(Windows)
     ghc-options: -dynamic
 
--- Builds the executable 'clashi', with gnodeb project in scope
+-- Builds the executable 'clashi', with clash project in scope
 executable clashi
   main-is: bin/Clashi.hs
   default-language: Haskell2010
   if !os(Windows)
     ghc-options: -dynamic
-  build-depends: base, clash-ghc, gnodeb
+  build-depends: base, clash-ghc, clash
 
 test-suite doctests
   type:             exitcode-stdio-1.0
@@ -112,7 +112,7 @@ test-suite doctests
   hs-source-dirs:   tests
   build-depends:
     base,
-    gnodeb,
+    clash,
     doctest-parallel >= 0.2 && < 0.4,
 
 test-suite test-library
@@ -125,10 +125,10 @@ test-suite test-library
   other-modules:
     Tests.Example.Project
   build-depends:
-    gnodeb,
+    clash,
     QuickCheck,
     clash-prelude-hedgehog,
     hedgehog,
-    tasty >= 1.2 && < 1.5,
+    tasty >= 1.2 && < 1.6,
     tasty-hedgehog,
     tasty-th

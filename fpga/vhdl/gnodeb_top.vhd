@@ -1,10 +1,10 @@
 library ieee ;
-    use ieee.std_logic_1164.all ;
-    use ieee.numeric_std.all ;
+use ieee.std_logic_1164.all ;
+use ieee.numeric_std.all ;
 
 
 library nuand;
-    use nuand.fifo_readwrite_p.all;
+use nuand.fifo_readwrite_p.all;
 
 entity gnodeb_top is
   port (
@@ -13,119 +13,103 @@ entity gnodeb_top is
     tx_packet_control       :   in      packet_control_t;
     tx_packet_empty         :   in      std_logic;
     tx_packet_ready         :   out     std_logic;
-    tx_leds                 :   out     std_logic_vector( 2 downto 0)
-  ) ;
+    leds                    :   out     std_logic_vector( 2 downto 0)
+    ) ;
 end gnodeb_top ;
 
 architecture simple of gnodeb_top is
-  type fsm_tx_t is (IDLE,WAIT_TO_READ_TRANSPORT_BLOCK,READ_TRANSPORT_BLOCK,WAIT_FOR_SOP,FINISH_TRANSPORT_BLOCK,
-                    ERR,DONE);
+  type fsm_tx_t is (IDLE, WAIT_FOR_SOP, READ_PACKET, DONE, ERR, TEST);
 
   type state_tx_t is record
     fsm : fsm_tx_t;
     ready_for_packet : std_logic;
-    message_length : integer;
-    read_dwords : integer;
-    transport_block_dwords : integer;
-    data : std_logic_vector(31 downto 0);
-    leds : std_logic_vector(2 downto 0);
+    read_next_word   : std_logic;
+    data             : std_logic_vector(31 downto 0);
+    read_dwords      : integer;
   end record;
-  signal current_tx_state, future_tx_state          :  state_tx_t ;
-  attribute keep: boolean;
-  attribute noprune: boolean;
-  attribute preserve: boolean;
-  attribute keep of current_tx_state : signal is true;
-  attribute noprune of current_tx_state : signal is true;
-  attribute preserve of current_tx_state : signal is true;
 
-function NULL_TX_STATE return state_tx_t is
-  variable rv : state_tx_t;
-begin
-  rv.fsm := IDLE ;
-  rv.ready_for_packet := '0' ;
-  rv.read_dwords := 0;
-  rv.transport_block_dwords := 0;
-  rv.data := (others => '0');
-  rv.leds := (others => '1');
-  return rv ;
-end function ;
+  signal current_tx_state, future_tx_state : state_tx_t;
+
+  function NULL_TX_STATE return state_tx_t is
+    variable rv : state_tx_t;
+  begin
+    rv.fsm := IDLE;
+    rv.ready_for_packet := '0';
+    rv.read_next_word   := '0';
+    rv.data             := (others => '0');
+    rv.read_dwords      := 0;
+    return rv;
+  end function;
 
 begin
 
-tx_packet_ready <= '1' when (current_tx_state.ready_for_packet = '1' ) else '0' ;
+tx_packet_ready <= '1' when (current_tx_state.ready_for_packet = '1' or current_tx_state.read_next_word = '1') else '0';
 
--- LEDs are active low
--- tx_leds <= "000" when (current_tx_state.fsm = IDLE) else
---            "001" when (current_tx_state.fsm = WAIT_FOR_SOP) else
---            "010" when (current_tx_state.fsm = WAIT_TO_READ_TRANSPORT_BLOCK) else
---            "011" when (current_tx_state.fsm = READ_TRANSPORT_BLOCK) else
---            "100" when (current_tx_state.fsm = FINISH_TRANSPORT_BLOCK) else
---            "101" when (current_tx_state.fsm = DONE) else
---            "110" when (current_tx_state.fsm = ERR) else
---            "111";
-tx_leds <= current_tx_state.leds;
-tx_state_comb : process(all)
-begin
-  future_tx_state <= current_tx_state;
-  future_tx_state.ready_for_packet <= '0';
-  case current_tx_state.fsm is
+  -- Drive LEDs based on FSM state (your existing code is fine)
+   leds <= not "111" when current_tx_state.fsm = IDLE else
+           not "001" when current_tx_state.fsm = WAIT_FOR_SOP else
+           not "010" when current_tx_state.fsm = READ_PACKET else
+           not "011" when current_tx_state.fsm = DONE else
+           not "100" when current_tx_state.fsm = ERR else
+           not "000" when current_tx_state.fsm = TEST else
+           not "101";
 
-    when IDLE =>
-      if(tx_packet_empty = '0') then
-        future_tx_state.fsm <= WAIT_TO_READ_TRANSPORT_BLOCK;
-      else
-        future_tx_state <= NULL_TX_STATE;
-      end if;
+  tx_state_comb : process(all)
+  begin
+    future_tx_state <= current_tx_state;
+    future_tx_state.read_next_word <= '0';
 
-    when WAIT_TO_READ_TRANSPORT_BLOCK =>
-      future_tx_state.ready_for_packet <= '1';
-      future_tx_state.fsm <= WAIT_FOR_SOP;
+    case current_tx_state.fsm is
+      when IDLE =>
+        if (tx_packet_empty = '0') then
+          future_tx_state.fsm <= WAIT_FOR_SOP;
+        end if;
 
-
-   when WAIT_FOR_SOP =>
-      if( tx_packet_control.pkt_sop = '1' ) then
-        future_tx_state.transport_block_dwords <= to_integer(unsigned(tx_packet_control.data)) ;
-        future_tx_state.read_dwords <= current_tx_state.read_dwords + 1;
-        future_tx_state.ready_for_packet <= '0';
-        future_tx_state.fsm <= READ_TRANSPORT_BLOCK;
-      else
+      when WAIT_FOR_SOP =>
         future_tx_state.ready_for_packet <= '1';
-      end if;
 
-    when READ_TRANSPORT_BLOCK =>
-      if(current_tx_state.read_dwords <= current_tx_state.transport_block_dwords) then
-        future_tx_state.data <= tx_packet_control.data;
-        future_tx_state.leds <= tx_packet_control.data(2 downto 0);
-        future_tx_state.read_dwords <= current_tx_state.read_dwords + 1;
-      else
-        --future_tx_state.fsm <= FINISH_TRANSPORT_BLOCK;
-        future_tx_state.fsm <= DONE;
+        if (tx_packet_control.pkt_sop = '1' and tx_packet_control.data_valid = '1') then
+          future_tx_state.ready_for_packet <= '0';
+          future_tx_state.fsm <= READ_PACKET;
+          future_tx_state.read_dwords <= 1;
+          future_tx_state.data <= tx_packet_control.data;
+        end if;
 
-      end if;
+      when READ_PACKET =>
+        future_tx_state.read_next_word <= '1';
+        if (tx_packet_control.data_valid = '1') then
+          future_tx_state.read_dwords <= current_tx_state.read_dwords + 1;
+          future_tx_state.data <= tx_packet_control.data;
+          if (tx_packet_control.pkt_eop = '1') then
+             future_tx_state.fsm <= TEST;
+             future_tx_state.read_next_word <= '0';
+          end if;
+        end if;
 
-    when FINISH_TRANSPORT_BLOCK =>
-      if(current_tx_state.data = "00000000000000000000000000001101") then
-        future_tx_state.fsm <= DONE;
-      else
-        future_tx_state.fsm <= ERR;
-      end if;
+      when TEST =>
+        if (current_tx_state.data = x"0000000D") then
+            future_tx_state.fsm <= TEST;
+        else
+            future_tx_state.fsm <= ERR;
+        end if;
 
-    when DONE =>
-      future_tx_state.fsm <= DONE;
-    when ERR =>
-      future_tx_state.fsm <= ERR;
-  end case;
+      when DONE =>
+        future_tx_state.fsm <= IDLE;
 
-end process tx_state_comb;
+      when ERR =>
+        future_tx_state.fsm <= IDLE;
 
-tx_sync_proc : process(tx_clock, tx_reset)
-begin
-  if( tx_reset = '1' ) then
-    current_tx_state <= NULL_TX_STATE ;
-  elsif( rising_edge(tx_clock) ) then
-    current_tx_state <= future_tx_state ;
-  end if ;
-end process tx_sync_proc;
+    end case;
+  end process tx_state_comb;
 
+
+  tx_sync_proc : process(tx_clock, tx_reset)
+  begin
+    if (tx_reset = '1') then
+      current_tx_state <= NULL_TX_STATE;
+    elsif (rising_edge(tx_clock)) then
+      current_tx_state <= future_tx_state;
+    end if;
+  end process tx_sync_proc;
 
 end simple;
