@@ -87,9 +87,9 @@ library
   exposed-modules:
     GNodeBFAPI
   other-modules:
-    Domains
     GNodeBTX
     GNodeBRX
+    GNodeBFAPITypes
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with clash project in scope

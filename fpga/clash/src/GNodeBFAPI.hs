@@ -3,14 +3,41 @@
 module GNodeBFAPI where
 
 import Clash.Prelude
+import GNodeBFAPITypes
 import GNodeBTX
 import GNodeBRX
 
 -- =============================================================================
--- Top Entity
+-- Top Entity: BladeRF xA9 FAPI P5 Processor
 -- =============================================================================
+--
+-- Architecture (2 decoupled Mealy machines, no feedback loop):
+--
+--   Host (libbladeRF, BLADERF_FORMAT_PACKET_META)
+--     │
+--     ▼  tx_pkt_sop / tx_pkt_data / tx_pkt_eop
+--   ┌────────────────────────────────────────────────────────────┐
+--   │  TX Side  (GNodeBTX)                                      │
+--   │  • Receives bladeRF packets from host                     │
+--   │  • On SOP: processP5() → PHY state transition + response  │
+--   │  • Response held with frValid=1 until next packet          │
+--   │  • No handshake / no waiting for RX                       │
+--   └──────────┬─────────────────────────────────────────────────┘
+--              │ FapiResponse (frValid=1, msg_type, err_code, phy_state)
+--              │  (unidirectional, no feedback)
+--              ▼
+--   ┌──────────────────────────────────────────────────────────┐
+--   │  RX Side  (GNodeBRX)                                     │
+--   │  • Waits for frValid=1, latches, sets sentFlag           │
+--   │  • Serialises 2-word packet: SOP header + EOP sentinel   │
+--   │  • Same FSM shape as original working PoC                │
+--   │  • sentFlag prevents re-sending same response            │
+--   └──────────┬───────────────────────────────────────────────┘
+--              │ rx_pkt_sop / rx_pkt_data / rx_pkt_eop
+--              ▼
+--   Host (libbladeRF)
+--
 
--- | Top entity with explicit port names matching the synthesize annotation
 {-# ANN topEntity
   ( Synthesize
       { t_name = "gnodeb_fapi_top"
@@ -43,23 +70,23 @@ import GNodeBRX
 topEntity
   :: Clock System
   -> Reset System
-  -> Signal System Bit          -- ^ rx_enable
-  -> Signal System Bit          -- ^ rx_packet_enable
-  -> Signal System Bit          -- ^ rx_packet_ready
-  -> Clock System               -- ^ tx_clock
-  -> Reset System               -- ^ tx_reset
-  -> Signal System Bit          -- ^ tx_enable
-  -> Signal System Bit          -- ^ tx_pkt_sop
-  -> Signal System Bit          -- ^ tx_pkt_eop
-  -> Signal System (BitVector 32)  -- ^ tx_pkt_data
-  -> Signal System Bit          -- ^ tx_pkt_data_valid
-  -> Signal System Bit          -- ^ tx_packet_empty
-  -> ( Signal System Bit        -- ^ rx_pkt_sop
-     , Signal System Bit        -- ^ rx_pkt_eop
-     , Signal System (BitVector 32)  -- ^ rx_pkt_data
-     , Signal System Bit        -- ^ rx_pkt_data_valid
-     , Signal System Bit        -- ^ tx_packet_ready
-     , Signal System (BitVector 3)   -- ^ leds
+  -> Signal System Bit                     -- ^ rx_enable
+  -> Signal System Bit                     -- ^ rx_packet_enable
+  -> Signal System Bit                     -- ^ rx_packet_ready
+  -> Clock System                          -- ^ tx_clock
+  -> Reset System                          -- ^ tx_reset
+  -> Signal System Bit                     -- ^ tx_enable
+  -> Signal System Bit                     -- ^ tx_pkt_sop
+  -> Signal System Bit                     -- ^ tx_pkt_eop
+  -> Signal System (BitVector 32)          -- ^ tx_pkt_data
+  -> Signal System Bit                     -- ^ tx_pkt_data_valid
+  -> Signal System Bit                     -- ^ tx_packet_empty
+  -> ( Signal System Bit                   -- ^ rx_pkt_sop
+     , Signal System Bit                   -- ^ rx_pkt_eop
+     , Signal System (BitVector 32)        -- ^ rx_pkt_data
+     , Signal System Bit                   -- ^ rx_pkt_data_valid
+     , Signal System Bit                   -- ^ tx_packet_ready
+     , Signal System (BitVector 3)         -- ^ leds
      )
 topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
           txClk txRst txEnBit
@@ -67,47 +94,41 @@ topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
           txPktEmpty =
   let
     -- =========================================================================
-    -- RX Side (Packet Generator)
+    -- TX Side: packet consumer + inline FAPI P5 processor
     -- =========================================================================
 
-    -- Convert Bit signal to Enable for RX
-    rxEn = toEnable (fmap bitToBool rxEnBit)
-
-    -- Combine RX inputs for the Mealy machine
-    rxInputs = bundle (rxEnBit, rxPktEn, rxPktReady)
-
-    -- Instantiate the RX Mealy machine with explicit clock/reset/enable
-    rxPacketCtrl = withClockResetEnable rxClk rxRst rxEn $
-                     mealy (rxMealy defaultRxConfig) nullRxState rxInputs
-
-    -- Extract RX outputs from packet control
-    rxPktSop       = pkt_sop <$> rxPacketCtrl
-    rxPktEop       = pkt_eop <$> rxPacketCtrl
-    rxPktData      = pktData <$> rxPacketCtrl
-    rxPktDataValid = data_valid <$> rxPacketCtrl
-
-    -- =========================================================================
-    -- TX Side (Packet Consumer)
-    -- =========================================================================
-
-    -- Convert Bit signal to Enable for TX
     txEn = toEnable (fmap bitToBool txEnBit)
 
-    -- Construct packet control signal from individual inputs
     txPacketControl = PacketControl <$> txPktSop
                                     <*> txPktEop
                                     <*> txPktDataValid
                                     <*> txPktData
 
-    -- Combine inputs for the TX Mealy machine
     txInputs = bundle (txPktEmpty, txPacketControl)
 
-    -- Instantiate the TX Mealy machine with explicit clock/reset/enable
     txOutput = withClockResetEnable txClk txRst txEn $
                  mealy txMealy nullTxState txInputs
 
-    -- Extract TX outputs
-    txReady = tx_packet_ready <$> txOutput
-    txLeds  = leds <$> txOutput
+    txReady      = tx_packet_ready <$> txOutput
+    txLeds       = leds            <$> txOutput
+    fapiResponse = txResponse      <$> txOutput
+
+    -- =========================================================================
+    -- RX Side: FAPI response → bladeRF packet serialiser
+    -- =========================================================================
+
+    rxEn = toEnable (fmap bitToBool rxEnBit)
+
+    rxInputs = bundle (rxEnBit, rxPktEn, rxPktReady, fapiResponse)
+
+    -- RX mealy returns plain PacketControl (same as original working PoC)
+    rxPacketCtrl = withClockResetEnable rxClk rxRst rxEn $
+                     mealy (rxMealy defaultRxConfig) nullRxState rxInputs
+
+    rxPktSop       = pkt_sop    <$> rxPacketCtrl
+    rxPktEop       = pkt_eop    <$> rxPacketCtrl
+    rxPktData      = pktData    <$> rxPacketCtrl
+    rxPktDataValid = data_valid <$> rxPacketCtrl
+
   in
     (rxPktSop, rxPktEop, rxPktData, rxPktDataValid, txReady, txLeds)
