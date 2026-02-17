@@ -1,42 +1,26 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module GNodeBFAPI where
 
-import Clash.Prelude
+import Clash.Explicit.Prelude
 import GNodeBFAPITypes
 import GNodeBTX
 import GNodeBRX
 
 -- =============================================================================
--- Top Entity: BladeRF xA9 FAPI P5 Processor
+-- Clock Domains
 -- =============================================================================
---
--- Architecture (2 decoupled Mealy machines, no feedback loop):
---
---   Host (libbladeRF, BLADERF_FORMAT_PACKET_META)
---     │
---     ▼  tx_pkt_sop / tx_pkt_data / tx_pkt_eop
---   ┌────────────────────────────────────────────────────────────┐
---   │  TX Side  (GNodeBTX)                                      │
---   │  • Receives bladeRF packets from host                     │
---   │  • On SOP: processP5() → PHY state transition + response  │
---   │  • Response held with frValid=1 until next packet          │
---   │  • No handshake / no waiting for RX                       │
---   └──────────┬─────────────────────────────────────────────────┘
---              │ FapiResponse (frValid=1, msg_type, err_code, phy_state)
---              │  (unidirectional, no feedback)
---              ▼
---   ┌──────────────────────────────────────────────────────────┐
---   │  RX Side  (GNodeBRX)                                     │
---   │  • Waits for frValid=1, latches, sets sentFlag           │
---   │  • Serialises 2-word packet: SOP header + EOP sentinel   │
---   │  • Same FSM shape as original working PoC                │
---   │  • sentFlag prevents re-sending same response            │
---   └──────────┬───────────────────────────────────────────────┘
---              │ rx_pkt_sop / rx_pkt_data / rx_pkt_eop
---              ▼
---   Host (libbladeRF)
---
+
+createDomain vSystem{vName="DomTx", vPeriod=hzToPeriod 80e6}
+createDomain vSystem{vName="DomRx", vPeriod=hzToPeriod 80e6}
+
+-- =============================================================================
+-- Top Entity
+-- =============================================================================
 
 {-# ANN topEntity
   ( Synthesize
@@ -64,39 +48,41 @@ import GNodeBRX
             , PortName "rx_pkt_data_valid"
             , PortName "tx_packet_ready"
             , PortName "leds"
+            , PortName "tb_ready"
+            , PortName "tb_len_dwords"
+            , PortName "tb_pdu_index"
             ]
       }
   ) #-}
 topEntity
-  :: Clock System
-  -> Reset System
-  -> Signal System Bit                     -- ^ rx_enable
-  -> Signal System Bit                     -- ^ rx_packet_enable
-  -> Signal System Bit                     -- ^ rx_packet_ready
-  -> Clock System                          -- ^ tx_clock
-  -> Reset System                          -- ^ tx_reset
-  -> Signal System Bit                     -- ^ tx_enable
-  -> Signal System Bit                     -- ^ tx_pkt_sop
-  -> Signal System Bit                     -- ^ tx_pkt_eop
-  -> Signal System (BitVector 32)          -- ^ tx_pkt_data
-  -> Signal System Bit                     -- ^ tx_pkt_data_valid
-  -> Signal System Bit                     -- ^ tx_packet_empty
-  -> ( Signal System Bit                   -- ^ rx_pkt_sop
-     , Signal System Bit                   -- ^ rx_pkt_eop
-     , Signal System (BitVector 32)        -- ^ rx_pkt_data
-     , Signal System Bit                   -- ^ rx_pkt_data_valid
-     , Signal System Bit                   -- ^ tx_packet_ready
-     , Signal System (BitVector 3)         -- ^ leds
+  :: Clock DomRx
+  -> Reset DomRx
+  -> Signal DomRx Bit
+  -> Signal DomRx Bit
+  -> Signal DomRx Bit
+  -> Clock DomTx
+  -> Reset DomTx
+  -> Signal DomTx Bit
+  -> Signal DomTx Bit
+  -> Signal DomTx Bit
+  -> Signal DomTx (BitVector 32)
+  -> Signal DomTx Bit
+  -> Signal DomTx Bit
+  -> ( Signal DomRx Bit
+     , Signal DomRx Bit
+     , Signal DomRx (BitVector 32)
+     , Signal DomRx Bit
+     , Signal DomTx Bit
+     , Signal DomTx (BitVector 3)
+     , Signal DomTx Bit
+     , Signal DomTx (BitVector 16)
+     , Signal DomTx (BitVector 16)
      )
 topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
           txClk txRst txEnBit
           txPktSop txPktEop txPktData txPktDataValid
           txPktEmpty =
   let
-    -- =========================================================================
-    -- TX Side: packet consumer + inline FAPI P5 processor
-    -- =========================================================================
-
     txEn = toEnable (fmap bitToBool txEnBit)
 
     txPacketControl = PacketControl <$> txPktSop
@@ -104,31 +90,35 @@ topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
                                     <*> txPktDataValid
                                     <*> txPktData
 
-    txInputs = bundle (txPktEmpty, txPacketControl)
+    fifoFullBit = boolToBit <$> fifoFull
+    txInputs = bundle (txPktEmpty, txPacketControl, fifoFullBit)
+    txOutput = mealy txClk txRst txEn txMealy nullTxState txInputs
 
-    txOutput = withClockResetEnable txClk txRst txEn $
-                 mealy txMealy nullTxState txInputs
-
-    txReady      = tx_packet_ready <$> txOutput
-    txLeds       = leds            <$> txOutput
-    fapiResponse = txResponse      <$> txOutput
-
-    -- =========================================================================
-    -- RX Side: FAPI response → bladeRF packet serialiser
-    -- =========================================================================
+    txReady       = tx_packet_ready <$> txOutput
+    txLeds        = leds            <$> txOutput
+    txFifoWr      = txFifoWrite     <$> txOutput
+    tbReadyOut    = txoTbReady      <$> txOutput
+    tbLenDwOut    = pack . txoTbLenDwords <$> txOutput
+    tbPduIndexOut = txoTbPduIndex   <$> txOutput
 
     rxEn = toEnable (fmap bitToBool rxEnBit)
 
-    rxInputs = bundle (rxEnBit, rxPktEn, rxPktReady, fapiResponse)
+    (fifoData, fifoEmpty, fifoFull) =
+      asyncFIFOSynchronizer
+        d4 txClk rxClk txRst rxRst txEn rxEn fifoReadReq txFifoWr
 
-    -- RX mealy returns plain PacketControl (same as original working PoC)
-    rxPacketCtrl = withClockResetEnable rxClk rxRst rxEn $
-                     mealy (rxMealy defaultRxConfig) nullRxState rxInputs
+    rxInputs = bundle (rxEnBit, rxPktEn, rxPktReady, fifoData, fifoEmpty)
+    rxRawOutput = mealy rxClk rxRst rxEn rxMealy nullRxState rxInputs
+    rxPacketCtrl = fst <$> rxRawOutput
+    fifoReadReq  = snd <$> rxRawOutput
 
-    rxPktSop       = pkt_sop    <$> rxPacketCtrl
-    rxPktEop       = pkt_eop    <$> rxPacketCtrl
-    rxPktData      = pktData    <$> rxPacketCtrl
-    rxPktDataValid = data_valid <$> rxPacketCtrl
+    rxPktSopOut  = pkt_sop    <$> rxPacketCtrl
+    rxPktEopOut  = pkt_eop    <$> rxPacketCtrl
+    rxPktDataOut = pktData    <$> rxPacketCtrl
+    rxPktDvOut   = data_valid <$> rxPacketCtrl
 
   in
-    (rxPktSop, rxPktEop, rxPktData, rxPktDataValid, txReady, txLeds)
+    ( rxPktSopOut, rxPktEopOut, rxPktDataOut, rxPktDvOut
+    , txReady, txLeds
+    , tbReadyOut, tbLenDwOut, tbPduIndexOut
+    )

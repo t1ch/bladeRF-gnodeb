@@ -78,8 +78,9 @@ common common-options
     clash-prelude >= 1.8.4 && < 1.10,
     ghc-typelits-natnormalise,
     ghc-typelits-extra,
-    ghc-typelits-knownnat
-
+    ghc-typelits-knownnat,
+    matrix,
+    template-haskell
 
 library
   import: common-options
@@ -90,6 +91,12 @@ library
     GNodeBTX
     GNodeBRX
     GNodeBFAPITypes
+    FapiMsgConfig
+    FapiMsgDlTti
+    FapiMsgSlot
+    FapiMsgTxData
+    NewRadioCRC
+    ParallelCRC
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with clash project in scope

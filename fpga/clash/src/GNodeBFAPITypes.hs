@@ -1,77 +1,148 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module GNodeBFAPITypes
-  ( -- * FAPI Message Type IDs (SCF222 P5)
-    FapiMsgType(..)
-  , fapiMsgTypeId
-  , fapiMsgTypeFromId
-
-    -- * PHY State Machine (SCF222 Section 3.2)
-  , PhyState(..)
-  , phyStateToVal
-
-    -- * FAPI Response
-  , FapiResponse(..)
-  , nullFapiResponse
-
+  ( -- * FAPI Message Type Classification
+    FapiMsgType(..), fapiMsgTypeId, fapiMsgTypeFromId
+    -- * PHY State
+  , PhyState(..), phyStateToVal
+    -- * SCF-222 Common Message Header
+  , FapiHeader(..), nullFapiHeader, parseHeaderDw0, parseHeaderDw1
+    -- * Parsed Request (after header extraction)
+  , FapiParsedReq(..), nullFapiParsedReq
+    -- * Response Payload
+  , FapiRespPayload(..), nullFapiRespPayload
+  , packRespHeaderDw0, packRespHeaderDw1
     -- * Error Codes
-  , FapiErrorCode(..)
-  , fapiErrorCodeVal
-
-    -- * Packet Control (bladeRF packet_control_t)
-  , PacketControl(..)
-  , nullPacketControl
+  , FapiErrorCode(..), fapiErrorCodeVal
+    -- * Packet Control (bladeRF)
+  , PacketControl(..), nullPacketControl
+    -- * Body Parser Sub-FSM Phase
+  , BodyParsePhase(..)
+    -- * Per-message parser state records
+  , DlTtiParseState(..), nullDlTtiParseState
+  , TxDataParseState(..), nullTxDataParseState
+    -- * NR CRC types
+  , NrCrcType(..)
+  , NrCrcPhase(..)
+  , NrCrcState(..), nullNrCrcState
+    -- * DL_TTI types
+  , DlPduType(..), dlPduTypeFromId
+  , DlTtiInfo(..), nullDlTtiInfo
+  , PdschInfo(..), nullPdschInfo
+    -- * TX_DATA types
+  , TxDataInfo(..), nullTxDataInfo
+  , TxDataPdu(..), nullTxDataPdu
+    -- * Transport Block buffer
+  , TbBuffer(..), nullTbBuffer
+    -- * Utilities
+  , bodyLenToDwords, maxBodyDwords
+    -- * Constants
+  , maxPdschPerSlot, maxTbDwords, maxCdcWords
   ) where
 
 import Clash.Prelude
 
 -- =============================================================================
--- FAPI P5 Message Types (SCF222 Table 3-5)
+-- FAPI Message Types (SCF-222 Table 3.2-1)
 -- =============================================================================
 
 data FapiMsgType
-  = FAPI_PARAM_REQUEST
-  | FAPI_PARAM_RESPONSE
-  | FAPI_CONFIG_REQUEST
-  | FAPI_CONFIG_RESPONSE
-  | FAPI_START_REQUEST
-  | FAPI_STOP_REQUEST
-  | FAPI_STOP_INDICATION
-  | FAPI_ERROR_INDICATION
+  = FAPI_PARAM_REQUEST              -- 0x00
+  | FAPI_PARAM_RESPONSE             -- 0x01
+  | FAPI_CONFIG_REQUEST             -- 0x02
+  | FAPI_CONFIG_RESPONSE            -- 0x03
+  | FAPI_START_REQUEST              -- 0x04
+  | FAPI_STOP_REQUEST               -- 0x05
+  | FAPI_STOP_INDICATION            -- 0x06
+  | FAPI_ERROR_INDICATION           -- 0x07
+  | FAPI_RESET_REQUEST              -- 0x08
+  | FAPI_RESET_INDICATION           -- 0x09
+  | FAPI_CONNECTIVITY_INDICATION    -- 0x0A
+  | FAPI_DL_TTI_REQUEST             -- 0x80
+  | FAPI_UL_TTI_REQUEST             -- 0x81
+  | FAPI_SLOT_INDICATION            -- 0x82
+  | FAPI_UL_DCI_REQUEST             -- 0x83
+  | FAPI_TX_DATA_REQUEST            -- 0x84
+  | FAPI_RX_DATA_INDICATION         -- 0x85
+  | FAPI_CRC_INDICATION             -- 0x86
+  | FAPI_UCI_INDICATION             -- 0x87
+  | FAPI_SRS_INDICATION             -- 0x88
+  | FAPI_RACH_INDICATION            -- 0x89
+  | FAPI_DL_TTI_RESPONSE            -- 0x8A
+  | FAPI_TIMING_INDICATION          -- 0x8B
+  | FAPI_UL_METRICS_INDICATION      -- 0x8C
+  | FAPI_RIM_RS_INDICATION          -- 0x8D
+  | FAPI_ADV_SLEEP_CTRL_REQUEST     -- 0x8D (direction-dependent)
+  | FAPI_ADV_SLEEP_CTRL_INDICATION  -- 0x8E
   | FAPI_MSG_UNKNOWN
   deriving (Show, Eq, Generic, NFDataX)
 
-fapiMsgTypeId :: FapiMsgType -> BitVector 8
-fapiMsgTypeId FAPI_PARAM_REQUEST    = 0x00
-fapiMsgTypeId FAPI_PARAM_RESPONSE   = 0x01
-fapiMsgTypeId FAPI_CONFIG_REQUEST   = 0x02
-fapiMsgTypeId FAPI_CONFIG_RESPONSE  = 0x03
-fapiMsgTypeId FAPI_START_REQUEST    = 0x04
-fapiMsgTypeId FAPI_STOP_REQUEST     = 0x05
-fapiMsgTypeId FAPI_STOP_INDICATION  = 0x06
-fapiMsgTypeId FAPI_ERROR_INDICATION = 0x07
-fapiMsgTypeId FAPI_MSG_UNKNOWN      = 0xFF
+fapiMsgTypeId :: FapiMsgType -> BitVector 16
+fapiMsgTypeId FAPI_PARAM_REQUEST             = 0x0000
+fapiMsgTypeId FAPI_PARAM_RESPONSE            = 0x0001
+fapiMsgTypeId FAPI_CONFIG_REQUEST            = 0x0002
+fapiMsgTypeId FAPI_CONFIG_RESPONSE           = 0x0003
+fapiMsgTypeId FAPI_START_REQUEST             = 0x0004
+fapiMsgTypeId FAPI_STOP_REQUEST              = 0x0005
+fapiMsgTypeId FAPI_STOP_INDICATION           = 0x0006
+fapiMsgTypeId FAPI_ERROR_INDICATION          = 0x0007
+fapiMsgTypeId FAPI_RESET_REQUEST             = 0x0008
+fapiMsgTypeId FAPI_RESET_INDICATION          = 0x0009
+fapiMsgTypeId FAPI_CONNECTIVITY_INDICATION   = 0x000A
+fapiMsgTypeId FAPI_DL_TTI_REQUEST            = 0x0080
+fapiMsgTypeId FAPI_UL_TTI_REQUEST            = 0x0081
+fapiMsgTypeId FAPI_SLOT_INDICATION           = 0x0082
+fapiMsgTypeId FAPI_UL_DCI_REQUEST            = 0x0083
+fapiMsgTypeId FAPI_TX_DATA_REQUEST           = 0x0084
+fapiMsgTypeId FAPI_RX_DATA_INDICATION        = 0x0085
+fapiMsgTypeId FAPI_CRC_INDICATION            = 0x0086
+fapiMsgTypeId FAPI_UCI_INDICATION            = 0x0087
+fapiMsgTypeId FAPI_SRS_INDICATION            = 0x0088
+fapiMsgTypeId FAPI_RACH_INDICATION           = 0x0089
+fapiMsgTypeId FAPI_DL_TTI_RESPONSE           = 0x008A
+fapiMsgTypeId FAPI_TIMING_INDICATION         = 0x008B
+fapiMsgTypeId FAPI_UL_METRICS_INDICATION     = 0x008C
+fapiMsgTypeId FAPI_RIM_RS_INDICATION         = 0x008D
+fapiMsgTypeId FAPI_ADV_SLEEP_CTRL_REQUEST    = 0x008D
+fapiMsgTypeId FAPI_ADV_SLEEP_CTRL_INDICATION = 0x008E
+fapiMsgTypeId FAPI_MSG_UNKNOWN               = 0x00FF
 
-fapiMsgTypeFromId :: BitVector 8 -> FapiMsgType
-fapiMsgTypeFromId 0x00 = FAPI_PARAM_REQUEST
-fapiMsgTypeFromId 0x01 = FAPI_PARAM_RESPONSE
-fapiMsgTypeFromId 0x02 = FAPI_CONFIG_REQUEST
-fapiMsgTypeFromId 0x03 = FAPI_CONFIG_RESPONSE
-fapiMsgTypeFromId 0x04 = FAPI_START_REQUEST
-fapiMsgTypeFromId 0x05 = FAPI_STOP_REQUEST
-fapiMsgTypeFromId 0x06 = FAPI_STOP_INDICATION
-fapiMsgTypeFromId 0x07 = FAPI_ERROR_INDICATION
-fapiMsgTypeFromId _    = FAPI_MSG_UNKNOWN
+fapiMsgTypeFromId :: BitVector 16 -> FapiMsgType
+fapiMsgTypeFromId 0x0000 = FAPI_PARAM_REQUEST
+fapiMsgTypeFromId 0x0001 = FAPI_PARAM_RESPONSE
+fapiMsgTypeFromId 0x0002 = FAPI_CONFIG_REQUEST
+fapiMsgTypeFromId 0x0003 = FAPI_CONFIG_RESPONSE
+fapiMsgTypeFromId 0x0004 = FAPI_START_REQUEST
+fapiMsgTypeFromId 0x0005 = FAPI_STOP_REQUEST
+fapiMsgTypeFromId 0x0006 = FAPI_STOP_INDICATION
+fapiMsgTypeFromId 0x0007 = FAPI_ERROR_INDICATION
+fapiMsgTypeFromId 0x0008 = FAPI_RESET_REQUEST
+fapiMsgTypeFromId 0x0009 = FAPI_RESET_INDICATION
+fapiMsgTypeFromId 0x000A = FAPI_CONNECTIVITY_INDICATION
+fapiMsgTypeFromId 0x0080 = FAPI_DL_TTI_REQUEST
+fapiMsgTypeFromId 0x0081 = FAPI_UL_TTI_REQUEST
+fapiMsgTypeFromId 0x0082 = FAPI_SLOT_INDICATION
+fapiMsgTypeFromId 0x0083 = FAPI_UL_DCI_REQUEST
+fapiMsgTypeFromId 0x0084 = FAPI_TX_DATA_REQUEST
+fapiMsgTypeFromId 0x0085 = FAPI_RX_DATA_INDICATION
+fapiMsgTypeFromId 0x0086 = FAPI_CRC_INDICATION
+fapiMsgTypeFromId 0x0087 = FAPI_UCI_INDICATION
+fapiMsgTypeFromId 0x0088 = FAPI_SRS_INDICATION
+fapiMsgTypeFromId 0x0089 = FAPI_RACH_INDICATION
+fapiMsgTypeFromId 0x008A = FAPI_DL_TTI_RESPONSE
+fapiMsgTypeFromId 0x008B = FAPI_TIMING_INDICATION
+fapiMsgTypeFromId 0x008C = FAPI_UL_METRICS_INDICATION
+fapiMsgTypeFromId 0x008D = FAPI_RIM_RS_INDICATION
+fapiMsgTypeFromId 0x008E = FAPI_ADV_SLEEP_CTRL_INDICATION
+fapiMsgTypeFromId _      = FAPI_MSG_UNKNOWN
 
 -- =============================================================================
--- PHY State Machine (SCF222 Section 3.2)
+-- PHY State
 -- =============================================================================
 
-data PhyState
-  = PHY_IDLE
-  | PHY_CONFIGURED
-  | PHY_RUNNING
+data PhyState = PHY_IDLE | PHY_CONFIGURED | PHY_RUNNING
   deriving (Show, Eq, Generic, NFDataX)
 
 phyStateToVal :: PhyState -> BitVector 8
@@ -80,36 +151,85 @@ phyStateToVal PHY_CONFIGURED = 0x01
 phyStateToVal PHY_RUNNING    = 0x02
 
 -- =============================================================================
--- FAPI Response
+-- SCF-222 Common Message Header
 -- =============================================================================
 
-data FapiResponse = FapiResponse
-  { frValid    :: Bit
-  , frMsgType  :: BitVector 8
-  , frErrCode  :: BitVector 8
-  , frPhyState :: BitVector 8
+data FapiHeader = FapiHeader
+  { hdrNumMsg   :: BitVector 8
+  , hdrHandle   :: BitVector 16
+  , hdrPhyId    :: BitVector 8
+  , hdrMsgType  :: BitVector 16
+  , hdrMsgLen   :: BitVector 16
   } deriving (Show, Eq, Generic, NFDataX)
 
-nullFapiResponse :: FapiResponse
-nullFapiResponse = FapiResponse
-  { frValid    = 0
-  , frMsgType  = 0xFF
-  , frErrCode  = 0
-  , frPhyState = 0
-  }
+nullFapiHeader :: FapiHeader
+nullFapiHeader = FapiHeader 0 0 0 0xFFFF 0
+
+parseHeaderDw0 :: BitVector 32 -> (BitVector 8, BitVector 16, BitVector 8)
+parseHeaderDw0 dw0 =
+  let numMsg = slice d31 d24 dw0
+      handle = slice d23 d8  dw0
+      phyId  = slice d7  d0  dw0
+  in (numMsg, handle, phyId)
+
+parseHeaderDw1 :: BitVector 32 -> (BitVector 16, BitVector 16)
+parseHeaderDw1 dw1 =
+  let msgType = slice d31 d16 dw1
+      msgLen  = slice d15 d0  dw1
+  in (msgType, msgLen)
 
 -- =============================================================================
--- Error Codes (SCF222 Table 3-6)
+-- Parsed Request
+-- =============================================================================
+
+data FapiParsedReq = FapiParsedReq
+  { prValid     :: Bit
+  , prMsgType   :: BitVector 16
+  , prHandle    :: BitVector 16
+  , prPhyId     :: BitVector 8
+  , prBodyLen   :: BitVector 16
+  , prBodyDw0   :: BitVector 32
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullFapiParsedReq :: FapiParsedReq
+nullFapiParsedReq = FapiParsedReq 0 0xFFFF 0 0 0 0
+
+-- =============================================================================
+-- Response Payload
+-- =============================================================================
+
+data FapiRespPayload = FapiRespPayload
+  { rpValid     :: Bit
+  , rpMsgType   :: BitVector 16
+  , rpHandle    :: BitVector 16
+  , rpPhyId     :: BitVector 8
+  , rpMsgLen    :: BitVector 16
+  , rpErrCode   :: BitVector 8
+  , rpPhyState  :: BitVector 8
+  , rpSfn       :: BitVector 16
+  , rpSlot      :: BitVector 16
+  , rpCrc       :: BitVector 32   -- ^ Debug: computed TB CRC value
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullFapiRespPayload :: FapiRespPayload
+nullFapiRespPayload = FapiRespPayload 0 0xFFFF 0 0 0 0 0 0 0 0
+
+packRespHeaderDw0 :: FapiRespPayload -> BitVector 32
+packRespHeaderDw0 rp =
+  (1 :: BitVector 8) ++# rpHandle rp ++# rpPhyId rp
+
+packRespHeaderDw1 :: FapiRespPayload -> BitVector 32
+packRespHeaderDw1 rp =
+  rpMsgType rp ++# rpMsgLen rp
+
+-- =============================================================================
+-- Error Codes
 -- =============================================================================
 
 data FapiErrorCode
-  = FAPI_MSG_OK
-  | FAPI_MSG_INVALID_STATE
-  | FAPI_MSG_INVALID_CONFIG
-  | FAPI_SFN_OUT_OF_SYNC
-  | FAPI_MSG_SLOT_ERR
-  | FAPI_MSG_BCH_MISSING
-  | FAPI_MSG_INVALID_SFN
+  = FAPI_MSG_OK | FAPI_MSG_INVALID_STATE | FAPI_MSG_INVALID_CONFIG
+  | FAPI_SFN_OUT_OF_SYNC | FAPI_MSG_SLOT_ERR
+  | FAPI_MSG_BCH_MISSING | FAPI_MSG_INVALID_SFN
   deriving (Show, Eq, Generic, NFDataX)
 
 fapiErrorCodeVal :: FapiErrorCode -> BitVector 8
@@ -122,7 +242,7 @@ fapiErrorCodeVal FAPI_MSG_BCH_MISSING   = 0x05
 fapiErrorCodeVal FAPI_MSG_INVALID_SFN   = 0x06
 
 -- =============================================================================
--- Shared Packet Control Type (matches nuand bladeRF packet_control_t)
+-- Packet Control (bladeRF)
 -- =============================================================================
 
 data PacketControl = PacketControl
@@ -133,9 +253,266 @@ data PacketControl = PacketControl
   } deriving (Show, Eq, Generic, NFDataX)
 
 nullPacketControl :: PacketControl
-nullPacketControl = PacketControl
-  { pkt_sop    = 0
-  , pkt_eop    = 0
-  , data_valid = 0
-  , pktData    = 0
+nullPacketControl = PacketControl 0 0 0 0
+
+-- =============================================================================
+-- Body Parser Sub-FSM Phase
+-- =============================================================================
+--
+-- Shared across all message parsers that do progressive body parsing.
+-- Each message parser interprets these phases in its own context.
+
+data BodyParsePhase
+  = BP_HEADER          -- ^ Reading body header dwords (SFN/slot, nPDUs etc.)
+  | BP_SKIP_FIXED      -- ^ Skipping fixed-size fields
+  | BP_PDU_HEADER      -- ^ Reading [pduType | pduSize] or [pduLength]
+  | BP_PDU_BODY        -- ^ Reading PDU body dwords
+  | BP_TLV_HEADER      -- ^ TX_DATA: reading TLV tag + length
+  | BP_TLV_DATA        -- ^ TX_DATA: reading TLV value (TB payload)
+  | BP_DONE            -- ^ All PDUs parsed, absorbing until EOP
+  deriving (Show, Eq, Generic, NFDataX)
+
+-- =============================================================================
+-- NR CRC Type Selector (3GPP TS 38.212)
+-- =============================================================================
+--
+-- Selects which CRC polynomial to use for TB integrity checking.
+-- CRC-24A: TB size > 3824 bits  (TS 38.212 Sec 7.2.1)
+-- CRC-24B: Code-block CRC       (TS 38.212 Sec 5.1)
+-- CRC-16:  TB size <= 3824 bits (TS 38.212 Sec 7.2.1)
+
+data NrCrcType
+  = NR_CRC24A
+  | NR_CRC24B
+  | NR_CRC16
+  | NR_CRC_NONE
+  deriving (Show, Eq, Generic, NFDataX)
+
+-- | CRC computation phase — mirrors the PoC CRCState.
+--   Controls bit-reversal behaviour in the parallel CRC step:
+--     CRCStarting    → first data dword, natural bit order
+--     CRCCalculating → subsequent data dwords, bit-reversed
+--     CRCDone        → final dword consumed, CRC value ready
+data NrCrcPhase
+  = CRCStarting
+  | CRCCalculating
+  | CRCDone
+  deriving (Show, Eq, Generic, NFDataX)
+
+-- | CRC accumulator state for inline NR TB CRC computation.
+--   Holds the shift registers for all three NR CRC variants,
+--   the selector indicating which polynomial is active, and
+--   the phase tracking bit-reversal semantics.
+--   Owned by NewRadioCRC; embedded in parser state records.
+data NrCrcState = NrCrcState
+  { ncCrcType   :: NrCrcType    -- ^ Which CRC variant is active
+  , ncCrcPhase  :: NrCrcPhase   -- ^ Current CRC computation phase
+  , ncCrc24AReg :: Vec 24 Bit   -- ^ CRC-24A shift register
+  , ncCrc24BReg :: Vec 24 Bit   -- ^ CRC-24B shift register
+  , ncCrc16Reg  :: Vec 16 Bit   -- ^ CRC-16  shift register
+  } deriving (Show, Generic, NFDataX)
+
+deriving instance Eq NrCrcState
+
+nullNrCrcState :: NrCrcState
+nullNrCrcState = NrCrcState
+  { ncCrcType   = NR_CRC_NONE
+  , ncCrcPhase  = CRCStarting
+  , ncCrc24AReg = repeat 0
+  , ncCrc24BReg = repeat 0
+  , ncCrc16Reg  = repeat 0
   }
+
+-- =============================================================================
+-- DL_TTI Per-message Parser State
+-- =============================================================================
+--
+-- Tracks position within a DL_TTI.request body during progressive
+-- dword-by-dword ingestion.
+
+data DlTtiParseState = DlTtiParseState
+  { dpPhase       :: BodyParsePhase
+  , dpBodyDwIdx   :: Unsigned 16   -- ^ Current body dword index
+  , dpInfo        :: DlTtiInfo     -- ^ Accumulated scheduling info
+  , dpCurPduIdx   :: Unsigned 16   -- ^ Current PDU index in the nPDUs loop
+  , dpCurPduType  :: BitVector 16  -- ^ pdu-Type of current PDU
+  , dpCurPduSizeDw :: Unsigned 16  -- ^ Body dwords in current PDU
+  , dpCurPduDwRead :: Unsigned 16  -- ^ Dwords read within current PDU body
+  , dpSkipRemain  :: Unsigned 16   -- ^ Dwords remaining to skip
+  } deriving (Show, Generic, NFDataX)
+
+deriving instance Eq DlTtiParseState
+
+nullDlTtiParseState :: DlTtiParseState
+nullDlTtiParseState = DlTtiParseState
+  { dpPhase        = BP_HEADER
+  , dpBodyDwIdx    = 0
+  , dpInfo         = nullDlTtiInfo
+  , dpCurPduIdx    = 0
+  , dpCurPduType   = 0xFFFF
+  , dpCurPduSizeDw = 0
+  , dpCurPduDwRead = 0
+  , dpSkipRemain   = 0
+  }
+
+-- =============================================================================
+-- TX_DATA Per-message Parser State
+-- =============================================================================
+
+data TxDataParseState = TxDataParseState
+  { tpPhase        :: BodyParsePhase
+  , tpBodyDwIdx    :: Unsigned 16
+  , tpInfo         :: TxDataInfo
+  , tpCurPdu       :: Unsigned 16   -- ^ Current PDU being parsed
+  , tpCurPduDwRead :: Unsigned 16   -- ^ Dwords read within current PDU body
+  , tpPduRemainDw  :: Unsigned 16   -- ^ Dwords remaining in current PDU
+  , tpTlvTag       :: BitVector 16  -- ^ Current TLV tag
+  , tpTlvLenDw     :: Unsigned 16   -- ^ TLV value length in dwords
+  , tpTlvDwRead    :: Unsigned 16   -- ^ TLV value dwords read so far
+  -- TB capture
+  , tpTbBuffer     :: TbBuffer
+  , tpTbWriteIdx   :: Unsigned 16   -- ^ Next write position
+  -- CRC accumulator for inline TB integrity checking
+  , tpCrcState     :: NrCrcState    -- ^ Inline TB CRC accumulator
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullTxDataParseState :: TxDataParseState
+nullTxDataParseState = TxDataParseState
+  { tpPhase        = BP_HEADER
+  , tpBodyDwIdx    = 0
+  , tpInfo         = nullTxDataInfo
+  , tpCurPdu       = 0
+  , tpCurPduDwRead = 0
+  , tpPduRemainDw  = 0
+  , tpTlvTag       = 0
+  , tpTlvLenDw     = 0
+  , tpTlvDwRead    = 0
+  , tpTbBuffer     = nullTbBuffer
+  , tpTbWriteIdx   = 0
+  , tpCrcState     = nullNrCrcState
+  }
+
+-- =============================================================================
+-- DL PDU Types (SCF-222 Table 3.4.2-1)
+-- =============================================================================
+
+data DlPduType
+  = DL_PDU_PDCCH     -- 0
+  | DL_PDU_PDSCH     -- 1
+  | DL_PDU_CSI_RS    -- 2
+  | DL_PDU_SSB       -- 3
+  | DL_PDU_OCNG      -- 4
+  | DL_PDU_PRS       -- 5
+  | DL_PDU_RIM_RS    -- 6
+  | DL_PDU_RB_AGG    -- 7
+  | DL_PDU_UNKNOWN
+  deriving (Show, Eq, Generic, NFDataX)
+
+dlPduTypeFromId :: BitVector 16 -> DlPduType
+dlPduTypeFromId 0 = DL_PDU_PDCCH
+dlPduTypeFromId 1 = DL_PDU_PDSCH
+dlPduTypeFromId 2 = DL_PDU_CSI_RS
+dlPduTypeFromId 3 = DL_PDU_SSB
+dlPduTypeFromId 4 = DL_PDU_OCNG
+dlPduTypeFromId 5 = DL_PDU_PRS
+dlPduTypeFromId 6 = DL_PDU_RIM_RS
+dlPduTypeFromId 7 = DL_PDU_RB_AGG
+dlPduTypeFromId _ = DL_PDU_UNKNOWN
+
+-- =============================================================================
+-- Constants
+-- =============================================================================
+
+maxPdschPerSlot :: Unsigned 16
+maxPdschPerSlot = 4
+
+maxTbDwords :: Unsigned 16
+maxTbDwords = 256
+
+maxCdcWords :: Unsigned 16
+maxCdcWords = 16
+
+-- =============================================================================
+-- DL_TTI Scheduling Info
+-- =============================================================================
+
+data DlTtiInfo = DlTtiInfo
+  { dtSfn        :: BitVector 16
+  , dtSlot       :: BitVector 16
+  , dtNumPdus    :: BitVector 16
+  , dtNumPdsch   :: Unsigned 16
+  , dtPdsch      :: Vec 4 PdschInfo
+  , dtValid      :: Bit
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullDlTtiInfo :: DlTtiInfo
+nullDlTtiInfo = DlTtiInfo 0 0 0 0 (repeat nullPdschInfo) 0
+
+data PdschInfo = PdschInfo
+  { piValid       :: Bit
+  , piPduIndex    :: BitVector 16
+  , piRnti        :: BitVector 16
+  , piTbSizeBytes :: BitVector 32
+  , piBwpSize     :: BitVector 16
+  , piBwpStart    :: BitVector 16
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullPdschInfo :: PdschInfo
+nullPdschInfo = PdschInfo 0 0 0 0 0 0
+
+-- =============================================================================
+-- TX_DATA Types
+-- =============================================================================
+
+data TxDataInfo = TxDataInfo
+  { tdSfn       :: BitVector 16
+  , tdSlot      :: BitVector 16
+  , tdNumPdus   :: BitVector 16
+  , tdPdus      :: Vec 4 TxDataPdu
+  , tdValid     :: Bit
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullTxDataInfo :: TxDataInfo
+nullTxDataInfo = TxDataInfo 0 0 0 (repeat nullTxDataPdu) 0
+
+data TxDataPdu = TxDataPdu
+  { txpValid      :: Bit
+  , txpPduIndex   :: BitVector 16
+  , txpCwIndex    :: BitVector 8
+  , txpTbLenBytes :: BitVector 32
+  , txpTbOffset   :: Unsigned 16
+  , txpCrc        :: BitVector 32  -- ^ Computed TB CRC (zero-padded to 32 bits)
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullTxDataPdu :: TxDataPdu
+nullTxDataPdu = TxDataPdu 0 0 0 0 0 0
+
+-- =============================================================================
+-- Transport Block Buffer
+-- =============================================================================
+
+data TbBuffer = TbBuffer
+  { tbData       :: Vec 256 (BitVector 32)
+  , tbLenDwords  :: Unsigned 16
+  , tbPduIndex   :: BitVector 16
+  , tbSfn        :: BitVector 16
+  , tbSlot       :: BitVector 16
+  , tbCrc        :: BitVector 32  -- ^ Computed CRC (zero-padded to 32 bits)
+  , tbReady      :: Bit
+  , tbConsumed   :: Bit
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullTbBuffer :: TbBuffer
+nullTbBuffer = TbBuffer (repeat 0) 0 0 0 0 0 0 0
+
+-- =============================================================================
+-- Utilities
+-- =============================================================================
+
+bodyLenToDwords :: BitVector 16 -> Unsigned 16
+bodyLenToDwords blen =
+  let b = unpack blen :: Unsigned 16
+  in (b + 3) `div` 4
+
+maxBodyDwords :: Unsigned 16
+maxBodyDwords = 8

@@ -2,16 +2,8 @@
 {-# LANGUAGE DataKinds #-}
 
 module GNodeBRX
-  ( -- * Types
-    FsmRx(..)
-  , StateRx(..)
-  , RxConfig(..)
-    -- * Default configuration
-  , defaultRxConfig
-    -- * State initialization
+  ( FsmRx(..), StateRx(..)
   , nullRxState
-    -- * State machine logic
-  , rxStateComb
   , rxMealy
   ) where
 
@@ -19,175 +11,194 @@ import Clash.Prelude
 import GNodeBFAPITypes
 
 -- =============================================================================
--- RX Types (FPGA → Host response serialiser)
+-- RX Types
 -- =============================================================================
 
 data FsmRx
-  = RX_IDLE          -- ^ Waiting for frValid
-  | RX_HOLDOFF       -- ^ Inter-packet gap
-  | RX_WAITED        -- ^ Waiting for rx_packet_ready
-  | RX_WRITE         -- ^ Writing packet words (SOP then EOP)
+  = RX_IDLE
+  | RX_SETTLE_DW1_A
+  | RX_SETTLE_DW1_B
+  | RX_READ_HDR_DW1
+  | RX_SETTLE_BODY_A
+  | RX_SETTLE_BODY_B
+  | RX_READ_BODY
+  | RX_WAIT_READY
+  | RX_WRITE
   deriving (Show, Eq, Generic, NFDataX)
 
-data RxConfig = RxConfig
-  { rxGap :: Int
-  } deriving (Show, Eq, Generic, NFDataX)
-
-defaultRxConfig :: RxConfig
-defaultRxConfig = RxConfig { rxGap = 10 }
-
--- | RX state record — uses the SAME shape as the original working PoC.
--- Output is PacketControl directly (not a tuple).
 data StateRx = StateRx
-  { rxState     :: FsmRx
-  , rxHoldCount :: Signed 32
-  , rxWriteCount :: Signed 32     -- ^ Counts down: 2 = SOP, 1 = EOP
-  , rxPktId     :: Unsigned 16
-  , rxPkt       :: PacketControl  -- ^ Current output packet control
-  , rxLatched   :: FapiResponse   -- ^ Latched response being serialised
-  , rxSentFlag  :: Bit            -- ^ '1' after we latch; cleared when frValid drops
+  { rxFsmState   :: FsmRx
+  , rxWriteCount :: Signed 32
+  , rxPktId      :: Unsigned 16
+  , rxPkt        :: PacketControl
+  , rxHdrDw0     :: BitVector 32
+  , rxHdrDw1     :: BitVector 32
+  , rxBodyBuf    :: Vec 14 (BitVector 32)
+  , rxBodyTotal  :: Unsigned 16
+  , rxBodyRead   :: Unsigned 16
+  , rxFifoRead   :: Bool
   } deriving (Show, Eq, Generic, NFDataX)
 
--- =============================================================================
--- State Initialization
--- =============================================================================
+maxRxBodyDwords :: Unsigned 16
+maxRxBodyDwords = 14
 
 nullRxState :: StateRx
 nullRxState = StateRx
-  { rxState      = RX_IDLE
-  , rxHoldCount  = 0
+  { rxFsmState   = RX_IDLE
   , rxWriteCount = 0
   , rxPktId      = 0
   , rxPkt        = nullPacketControl
-  , rxLatched    = nullFapiResponse
-  , rxSentFlag   = 0
+  , rxHdrDw0     = 0
+  , rxHdrDw1     = 0
+  , rxBodyBuf    = repeat 0
+  , rxBodyTotal  = 0
+  , rxBodyRead   = 0
+  , rxFifoRead   = False
   }
 
 -- =============================================================================
 -- Combinational Logic
 -- =============================================================================
 
--- | RX state machine — serialises a FapiResponse into a 2-word bladeRF packet.
--- Follows the EXACT same FSM shape as the original working PoC:
---   IDLE → HOLDOFF → WAITED → WRITE → IDLE
---
--- Output packet:
---   write_count=2 (SOP): [msg_type(8) | err_code(8) | phy_state(8) | pkt_id(8)]
---   write_count=1 (EOP): [0x0000000D] sentinel
---
--- No handshake back to TX. Uses rxSentFlag to avoid re-sending the same response:
---   - When we see frValid=1 and rxSentFlag=0, we latch and set rxSentFlag=1
---   - rxSentFlag is cleared when frValid drops to 0 (new response can be accepted)
 rxStateComb
-  :: RxConfig
+  :: StateRx
+  -> Bit -> Bit -> Bit
+  -> BitVector 32
+  -> Bool
   -> StateRx
-  -> Bit              -- ^ rx_enable
-  -> Bit              -- ^ rx_packet_enable
-  -> Bit              -- ^ rx_packet_ready
-  -> FapiResponse     -- ^ Response from TX side
-  -> StateRx
-rxStateComb config current rx_enable rx_packet_enable rx_packet_ready fapiResp =
+rxStateComb current rx_enable rx_packet_enable rx_packet_ready
+            fifoData fifoEmpty =
   let
-    -- Default: keep state, clear packet control (same pattern as original PoC)
-    future = current { rxPkt = nullPacketControl }
-
-    gapVal = fromIntegral (rxGap config)
-    pktLen = 2 :: Signed 32   -- 2 words: SOP header + EOP sentinel
-
-    -- Clear sentFlag when the TX side's frValid drops (new response can come)
-    futureWithFlagUpdate =
-      if frValid fapiResp == 0
-        then future { rxSentFlag = 0 }
-        else future
+    quiet = current { rxPkt = nullPacketControl, rxFifoRead = False }
   in
-    case rxState current of
+    case rxFsmState current of
+
       RX_IDLE ->
-        let idle_future = futureWithFlagUpdate
-              { rxHoldCount  = 0
-              , rxWriteCount = 0
-              }
-        in
-          if rx_enable == 1 && rx_packet_enable == 1
-               && frValid fapiResp == 1
-               && rxSentFlag current == 0
-            then idle_future
-              { rxState    = RX_HOLDOFF
-              , rxLatched  = fapiResp
-              , rxSentFlag = 1
-              }
-            else idle_future
+        if rx_enable == 1 && rx_packet_enable == 1 && not fifoEmpty
+          then quiet
+            { rxFsmState  = RX_SETTLE_DW1_A
+            , rxHdrDw0    = fifoData
+            , rxFifoRead  = True
+            , rxBodyRead  = 0
+            , rxBodyBuf   = repeat 0
+            }
+          else quiet
 
-      RX_HOLDOFF ->
-        let hf = future
-              { rxWriteCount = pktLen
-              , rxHoldCount  = rxHoldCount current + 1
-              }
-        in
-          if rxHoldCount current == gapVal
-            then hf { rxState = RX_WAITED }
-            else hf
+      RX_SETTLE_DW1_A ->
+        quiet { rxFsmState = RX_SETTLE_DW1_B }
 
-      RX_WAITED ->
+      RX_SETTLE_DW1_B ->
+        quiet { rxFsmState = RX_READ_HDR_DW1 }
+
+      RX_READ_HDR_DW1 ->
+        if not fifoEmpty
+          then
+            let hdw1 = fifoData
+                (_, msgLen) = parseHeaderDw1 hdw1
+                nBody = bodyLenToDwords msgLen
+                nBodyClamped = if nBody > maxRxBodyDwords
+                                 then maxRxBodyDwords else nBody
+            in if nBodyClamped == 0
+                 then quiet
+                   { rxFsmState  = RX_WAIT_READY
+                   , rxHdrDw1    = hdw1
+                   , rxBodyTotal = 0
+                   , rxFifoRead  = True
+                   , rxWriteCount = 4
+                   }
+                 else quiet
+                   { rxFsmState  = RX_SETTLE_BODY_A
+                   , rxHdrDw1    = hdw1
+                   , rxBodyTotal = nBodyClamped
+                   , rxFifoRead  = True
+                   }
+          else quiet
+
+      RX_SETTLE_BODY_A ->
+        quiet { rxFsmState = RX_SETTLE_BODY_B }
+
+      RX_SETTLE_BODY_B ->
+        quiet { rxFsmState = RX_READ_BODY }
+
+      RX_READ_BODY ->
+        if not fifoEmpty
+          then
+            let idx  = rxBodyRead current
+                word = fifoData
+                newBuf  = replace idx word (rxBodyBuf current)
+                newRead = idx + 1
+                allDone = newRead >= rxBodyTotal current
+                nBody   = rxBodyTotal current
+                wireDwords = fromIntegral (2 + nBody + 2) :: Signed 32
+            in if allDone
+                 then quiet
+                   { rxFsmState  = RX_WAIT_READY
+                   , rxBodyBuf   = newBuf
+                   , rxBodyRead  = newRead
+                   , rxFifoRead  = True
+                   , rxWriteCount = wireDwords
+                   }
+                 else quiet
+                   { rxFsmState  = RX_SETTLE_BODY_A
+                   , rxBodyBuf   = newBuf
+                   , rxBodyRead  = newRead
+                   , rxFifoRead  = True
+                   }
+          else quiet
+
+      RX_WAIT_READY ->
         if rx_packet_ready == 1
-          then future { rxState = RX_WRITE }
-          else future
+          then quiet { rxFsmState = RX_WRITE }
+          else quiet
 
       RX_WRITE ->
         let
-          curWrite = rxWriteCount current
-          resp     = rxLatched current
+          curWrite  = rxWriteCount current
+          nBody     = rxBodyTotal current
+          wireTotal = fromIntegral (2 + nBody + 2) :: Signed 32
+          pos       = wireTotal - curWrite
 
-          -- Build the header word: [msg_type(8)|err_code(8)|phy_state(8)|pkt_id(8)]
-          pkt_id_vec = pack (resize (rxPktId current) :: Unsigned 16)
-          headerWord = (frMsgType resp)
-                   ++# (frErrCode resp)
-                   ++# (frPhyState resp)
-                   ++# (slice d7 d0 pkt_id_vec)
+          wordData
+            | pos == 0           = rxHdrDw0 current
+            | pos == 1           = rxHdrDw1 current
+            | pos >= 2 && pos < fromIntegral (2 + nBody)
+                                 = let bodyIdx = fromIntegral (pos - 2) :: Unsigned 16
+                                   in rxBodyBuf current !! bodyIdx
+            | curWrite == 1      = 0x0000000D
+            | otherwise          = 0x00000000
 
-          write_future = future
-            { rxPkt = (rxPkt future)
-                { data_valid = 1
-                }
+          basePkt = nullPacketControl
+            { data_valid = 1
+            , pktData    = wordData
+            }
+
+          write_future = quiet
+            { rxPkt        = basePkt
             , rxWriteCount = curWrite - 1
             }
-        in
-          if curWrite == pktLen
-            then -- First word: SOP
-              write_future
-                { rxPkt = (rxPkt write_future)
-                    { pkt_sop = 1
-                    , pktData = headerWord
+
+        in if curWrite == wireTotal
+             then write_future
+               { rxPkt = basePkt { pkt_sop = 1 } }
+           else if curWrite == 1
+             then let newId = if rxPktId current > 65000 then 0
+                              else rxPktId current + 1
+                  in write_future
+                    { rxPkt      = basePkt { pkt_eop = 1 }
+                    , rxFsmState = RX_IDLE
+                    , rxPktId    = newId
                     }
-                }
-          else if curWrite == 1
-            then -- Last word: EOP
-              let newId = if rxPktId current > 65000 then 0
-                          else rxPktId current + 1
-              in write_future
-                { rxPkt = (rxPkt write_future)
-                    { pkt_eop = 1
-                    , pktData = 0x0000000D
-                    }
-                , rxState = RX_IDLE
-                , rxPktId = newId
-                }
-          else -- Middle words (not used for 2-word packets, but safe)
-            write_future
-              { rxPkt = (rxPkt write_future) { pktData = 0 }
-              }
+           else write_future
 
 -- =============================================================================
--- Mealy Machine — returns PacketControl directly, same as original PoC
+-- Mealy Machine
 -- =============================================================================
 
 rxMealy
-  :: RxConfig
-  -> StateRx
-  -> (Bit, Bit, Bit, FapiResponse)
-  -> (StateRx, PacketControl)        -- ^ Plain PacketControl, no tuple
-rxMealy config current (rx_enable, rx_pkt_enable, rx_pkt_ready, fapiResp) =
-  let
-    future = rxStateComb config current rx_enable rx_pkt_enable rx_pkt_ready fapiResp
-    output = rxPkt current   -- Registered output, same as original PoC
-  in
-    (future, output)
+  :: StateRx
+  -> (Bit, Bit, Bit, BitVector 32, Bool)
+  -> (StateRx, (PacketControl, Bool))
+rxMealy current (rx_en, rx_pkt_en, rx_pkt_rdy, fData, fEmpty) =
+  let future = rxStateComb current rx_en rx_pkt_en rx_pkt_rdy fData fEmpty
+      output = (rxPkt current, rxFifoRead current)
+  in (future, output)
