@@ -35,6 +35,10 @@ module FapiMsgDlTti
 
 import Clash.Prelude
 import GNodeBFAPITypes
+import FapiDlPduPdsch  (parsePdschBodyDw)
+import FapiDlPduPdcch  (parsePdcchBodyDw)
+import FapiDlPduSsb    (parseSsbBodyDw)
+import FapiDlPduCsiRs  (parseCsiRsBodyDw)
 
 -- =============================================================================
 -- Progressive Body Parser
@@ -102,73 +106,72 @@ parseDlTtiDword st dw _bodyDwIdx =
       let dwRead  = dpCurPduDwRead st + 1
           pduType = dlPduTypeFromId (dpCurPduType st)
           dti     = dpInfo st
-          nPdsch  = dtNumPdsch dti
 
-          -- For PDSCH PDUs, extract key scheduling fields
+          -- Dispatch to per-PDU-type body parser.
+          -- Each parser receives the current accumulated info record,
+          -- the intra-PDU dword index, and the dword value.
+          -- Counters (dtNumPdsch etc.) are used as write indices into the
+          -- respective Vec and are only incremented in the finalize block below.
           st' = case pduType of
             DL_PDU_PDSCH ->
-              case dpCurPduDwRead st of
-                -- PDSCH body DW0: [bwpSize(16) | bwpStart(16)]
-                0 -> let bwpSize  = slice d31 d16 dw
-                         bwpStart = slice d15 d0  dw
-                         pi0 = nullPdschInfo
-                           { piValid    = 1
-                           , piBwpSize  = bwpSize
-                           , piBwpStart = bwpStart
-                           }
-                         pdsch0 = replace nPdsch pi0 (dtPdsch dti)
-                     in st { dpInfo = dti { dtPdsch = pdsch0 } }
+              let nIdx   = dtNumPdsch dti
+                  pi'    = parsePdschBodyDw (dtPdsch dti !! nIdx)
+                                            (dpCurPduDwRead st) dw
+              in st { dpInfo = dti { dtPdsch = replace nIdx pi' (dtPdsch dti) } }
 
-                -- PDSCH body DW1: [scs(8) | cp(8) | pduIndex(16)]
-                1 -> let pduIndex = slice d15 d0 dw
-                         pi1 = (dtPdsch dti !! nPdsch)
-                                 { piPduIndex = pduIndex }
-                         pdsch1 = replace nPdsch pi1 (dtPdsch dti)
-                     in st { dpInfo = dti { dtPdsch = pdsch1 } }
+            DL_PDU_PDCCH ->
+              let nIdx   = dtNumPdcch dti
+                  pc'    = parsePdcchBodyDw (dtPdcch dti !! nIdx)
+                                            (dpCurPduDwRead st) dw
+              in st { dpInfo = dti { dtPdcch = replace nIdx pc' (dtPdcch dti) } }
 
-                -- PDSCH body DW2: [rnti(16) | pad(16)]
-                2 -> let rnti = slice d31 d16 dw
-                         pi2 = (dtPdsch dti !! nPdsch)
-                                 { piRnti = rnti }
-                         pdsch2 = replace nPdsch pi2 (dtPdsch dti)
-                     in st { dpInfo = dti { dtPdsch = pdsch2 } }
+            DL_PDU_SSB ->
+              let nIdx   = dtNumSsb dti
+                  sb'    = parseSsbBodyDw (dtSsb dti !! nIdx)
+                                          (dpCurPduDwRead st) dw
+              in st { dpInfo = dti { dtSsb = replace nIdx sb' (dtSsb dti) } }
 
-                -- PDSCH body DW3: [tbSizeBytes(32)]
-                3 -> let tbSz    = dw
-                         pi3     = (dtPdsch dti !! nPdsch)
-                                     { piTbSizeBytes = tbSz }
-                         pdsch3  = replace nPdsch pi3 (dtPdsch dti)
-                     in st { dpInfo = dti { dtPdsch = pdsch3 } }
+            DL_PDU_CSI_RS ->
+              let nIdx   = dtNumCsiRs dti
+                  cr'    = parseCsiRsBodyDw (dtCsiRs dti !! nIdx)
+                                            (dpCurPduDwRead st) dw
+              in st { dpInfo = dti { dtCsiRs = replace nIdx cr' (dtCsiRs dti) } }
 
-                -- Remaining PDSCH body dwords: skip (no TB data here)
-                _ -> st
-
-            _ -> st  -- non-PDSCH: skip
+            _ -> st  -- PRS, OCNG, RIM_RS, RB_AGG: skip gracefully
 
           -- Check if PDU body is fully consumed
           allRead = dwRead >= dpCurPduSizeDw st
           pduIdx  = dpCurPduIdx st + 1
           nPdus   = unpack (dtNumPdus (dpInfo st')) :: Unsigned 16
 
-          -- When a PDSCH PDU is complete, advance the PDSCH counter
-          finalizePdsch = allRead && pduType == DL_PDU_PDSCH
+          -- When a PDU is fully consumed, advance its type-specific counter.
+          finalizePdsch  = allRead && pduType == DL_PDU_PDSCH
+          finalizePdcch  = allRead && pduType == DL_PDU_PDCCH
+          finalizeSsb    = allRead && pduType == DL_PDU_SSB
+          finalizeCsiRs  = allRead && pduType == DL_PDU_CSI_RS
 
-          dti'     = dpInfo st'
-          newNPdsch = if finalizePdsch && nPdsch < maxPdschPerSlot
-                        then nPdsch + 1 else dtNumPdsch dti'
-
-          dtiOut = dti' { dtNumPdsch = newNPdsch }
+          dti' = dpInfo st'
+          dtiOut = dti'
+            { dtNumPdsch = if finalizePdsch && dtNumPdsch dti' < maxPdschPerSlot
+                             then dtNumPdsch dti' + 1 else dtNumPdsch dti'
+            , dtNumPdcch = if finalizePdcch && dtNumPdcch dti' < maxPdcchPerSlot
+                             then dtNumPdcch dti' + 1 else dtNumPdcch dti'
+            , dtNumSsb   = if finalizeSsb   && dtNumSsb   dti' < maxSsbPerSlot
+                             then dtNumSsb   dti' + 1 else dtNumSsb   dti'
+            , dtNumCsiRs = if finalizeCsiRs && dtNumCsiRs dti' < maxCsiRsPerSlot
+                             then dtNumCsiRs dti' + 1 else dtNumCsiRs dti'
+            }
 
       in if allRead
            then if pduIdx >= nPdus
                   then st' { dpCurPduDwRead = dwRead
-                           , dpPhase = BP_DONE
-                           , dpInfo  = dtiOut
+                           , dpPhase        = BP_DONE
+                           , dpInfo         = dtiOut
                            }
                   else st' { dpCurPduDwRead = 0
-                           , dpCurPduIdx = pduIdx
-                           , dpPhase = BP_PDU_HEADER
-                           , dpInfo  = dtiOut
+                           , dpCurPduIdx    = pduIdx
+                           , dpPhase        = BP_PDU_HEADER
+                           , dpInfo         = dtiOut
                            }
            else st' { dpCurPduDwRead = dwRead }
 

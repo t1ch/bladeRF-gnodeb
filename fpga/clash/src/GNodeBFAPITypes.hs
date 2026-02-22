@@ -25,12 +25,14 @@ module GNodeBFAPITypes
   , TxDataParseState(..), nullTxDataParseState
     -- * NR CRC types
   , NrCrcType(..)
-  , NrCrcPhase(..)
   , NrCrcState(..), nullNrCrcState
     -- * DL_TTI types
   , DlPduType(..), dlPduTypeFromId
   , DlTtiInfo(..), nullDlTtiInfo
   , PdschInfo(..), nullPdschInfo
+  , PdcchInfo(..), nullPdcchInfo
+  , SsbInfo(..), nullSsbInfo
+  , CsiRsInfo(..), nullCsiRsInfo
     -- * TX_DATA types
   , TxDataInfo(..), nullTxDataInfo
   , TxDataPdu(..), nullTxDataPdu
@@ -39,7 +41,8 @@ module GNodeBFAPITypes
     -- * Utilities
   , bodyLenToDwords, maxBodyDwords
     -- * Constants
-  , maxPdschPerSlot, maxTbDwords, maxCdcWords
+  , maxPdschPerSlot, maxPdcchPerSlot, maxSsbPerSlot, maxCsiRsPerSlot
+  , maxTbDwords, maxCdcWords
   ) where
 
 import Clash.Prelude
@@ -208,11 +211,10 @@ data FapiRespPayload = FapiRespPayload
   , rpPhyState  :: BitVector 8
   , rpSfn       :: BitVector 16
   , rpSlot      :: BitVector 16
-  , rpCrc       :: BitVector 32   -- ^ Debug: computed TB CRC value
   } deriving (Show, Eq, Generic, NFDataX)
 
 nullFapiRespPayload :: FapiRespPayload
-nullFapiRespPayload = FapiRespPayload 0 0xFFFF 0 0 0 0 0 0 0 0
+nullFapiRespPayload = FapiRespPayload 0 0xFFFF 0 0 0 0 0 0 0
 
 packRespHeaderDw0 :: FapiRespPayload -> BitVector 32
 packRespHeaderDw0 rp =
@@ -288,39 +290,27 @@ data NrCrcType
   | NR_CRC_NONE
   deriving (Show, Eq, Generic, NFDataX)
 
--- | CRC computation phase — mirrors the PoC CRCState.
---   Controls bit-reversal behaviour in the parallel CRC step:
---     CRCStarting    → first data dword, natural bit order
---     CRCCalculating → subsequent data dwords, bit-reversed
---     CRCDone        → final dword consumed, CRC value ready
-data NrCrcPhase
-  = CRCStarting
-  | CRCCalculating
-  | CRCDone
-  deriving (Show, Eq, Generic, NFDataX)
-
 -- | CRC accumulator state for inline NR TB CRC computation.
---   Holds the shift registers for all three NR CRC variants,
---   the selector indicating which polynomial is active, and
---   the phase tracking bit-reversal semantics.
+--   Holds the shift registers for all three NR CRC variants and
+--   the selector indicating which polynomial is active.
 --   Owned by NewRadioCRC; embedded in parser state records.
+--
+--   Registers are stored as BitVectors (not Vec n Bit) to match
+--   the StreamingCRC parallel step interface directly, avoiding
+--   pack/unpack conversions on every CRC update cycle.
 data NrCrcState = NrCrcState
-  { ncCrcType   :: NrCrcType    -- ^ Which CRC variant is active
-  , ncCrcPhase  :: NrCrcPhase   -- ^ Current CRC computation phase
-  , ncCrc24AReg :: Vec 24 Bit   -- ^ CRC-24A shift register
-  , ncCrc24BReg :: Vec 24 Bit   -- ^ CRC-24B shift register
-  , ncCrc16Reg  :: Vec 16 Bit   -- ^ CRC-16  shift register
-  } deriving (Show, Generic, NFDataX)
-
-deriving instance Eq NrCrcState
+  { ncCrcType   :: NrCrcType      -- ^ Which CRC variant is active
+  , ncCrc24AReg :: BitVector 24   -- ^ CRC-24A accumulator
+  , ncCrc24BReg :: BitVector 24   -- ^ CRC-24B accumulator
+  , ncCrc16Reg  :: BitVector 16   -- ^ CRC-16  accumulator
+  } deriving (Show, Eq, Generic, NFDataX)
 
 nullNrCrcState :: NrCrcState
 nullNrCrcState = NrCrcState
   { ncCrcType   = NR_CRC_NONE
-  , ncCrcPhase  = CRCStarting
-  , ncCrc24AReg = repeat 0
-  , ncCrc24BReg = repeat 0
-  , ncCrc16Reg  = repeat 0
+  , ncCrc24AReg = 0
+  , ncCrc24BReg = 0
+  , ncCrc16Reg  = 0
   }
 
 -- =============================================================================
@@ -426,6 +416,15 @@ dlPduTypeFromId _ = DL_PDU_UNKNOWN
 maxPdschPerSlot :: Unsigned 16
 maxPdschPerSlot = 4
 
+maxPdcchPerSlot :: Unsigned 16
+maxPdcchPerSlot = 4
+
+maxSsbPerSlot :: Unsigned 16
+maxSsbPerSlot = 2
+
+maxCsiRsPerSlot :: Unsigned 16
+maxCsiRsPerSlot = 4
+
 maxTbDwords :: Unsigned 16
 maxTbDwords = 256
 
@@ -440,13 +439,40 @@ data DlTtiInfo = DlTtiInfo
   { dtSfn        :: BitVector 16
   , dtSlot       :: BitVector 16
   , dtNumPdus    :: BitVector 16
+  -- PDSCH
   , dtNumPdsch   :: Unsigned 16
   , dtPdsch      :: Vec 4 PdschInfo
+  -- PDCCH
+  , dtNumPdcch   :: Unsigned 16
+  , dtPdcch      :: Vec 4 PdcchInfo
+  -- SSB
+  , dtNumSsb     :: Unsigned 16
+  , dtSsb        :: Vec 2 SsbInfo
+  -- CSI-RS
+  , dtNumCsiRs   :: Unsigned 16
+  , dtCsiRs      :: Vec 4 CsiRsInfo
   , dtValid      :: Bit
   } deriving (Show, Eq, Generic, NFDataX)
 
 nullDlTtiInfo :: DlTtiInfo
-nullDlTtiInfo = DlTtiInfo 0 0 0 0 (repeat nullPdschInfo) 0
+nullDlTtiInfo = DlTtiInfo
+  { dtSfn      = 0
+  , dtSlot     = 0
+  , dtNumPdus  = 0
+  , dtNumPdsch = 0
+  , dtPdsch    = repeat nullPdschInfo
+  , dtNumPdcch = 0
+  , dtPdcch    = repeat nullPdcchInfo
+  , dtNumSsb   = 0
+  , dtSsb      = repeat nullSsbInfo
+  , dtNumCsiRs = 0
+  , dtCsiRs    = repeat nullCsiRsInfo
+  , dtValid    = 0
+  }
+
+-- -----------------------------------------------------------------------------
+-- PDSCH (SCF-222 Table 3.4.2.2-1, simplified for PoC)
+-- -----------------------------------------------------------------------------
 
 data PdschInfo = PdschInfo
   { piValid       :: Bit
@@ -459,6 +485,57 @@ data PdschInfo = PdschInfo
 
 nullPdschInfo :: PdschInfo
 nullPdschInfo = PdschInfo 0 0 0 0 0 0
+
+-- -----------------------------------------------------------------------------
+-- PDCCH (SCF-222 Table 3.4.2.3-1, simplified for PoC)
+-- -----------------------------------------------------------------------------
+
+data PdcchInfo = PdcchInfo
+  { pcValid      :: Bit
+  , pcPduIndex   :: BitVector 16
+  , pcRnti       :: BitVector 16
+  , pcBwpSize    :: BitVector 16
+  , pcBwpStart   :: BitVector 16
+  , pcAggLevel   :: BitVector 8
+  , pcCceIndex   :: BitVector 8
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullPdcchInfo :: PdcchInfo
+nullPdcchInfo = PdcchInfo 0 0 0 0 0 0 0
+
+-- -----------------------------------------------------------------------------
+-- SSB (SCF-222 Table 3.4.2.5-1, simplified for PoC)
+-- -----------------------------------------------------------------------------
+
+data SsbInfo = SsbInfo
+  { sbValid               :: Bit
+  , sbPhysCellId          :: BitVector 16
+  , sbBetaPss             :: BitVector 8
+  , sbSsbBlockIdx         :: BitVector 8
+  , sbSsbSubcarrierOffset :: BitVector 8
+  , sbSsbOffsetPointA     :: BitVector 16
+  , sbBchPayload          :: BitVector 32
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullSsbInfo :: SsbInfo
+nullSsbInfo = SsbInfo 0 0 0 0 0 0 0
+
+-- -----------------------------------------------------------------------------
+-- CSI-RS (SCF-222 Table 3.4.2.4-1, simplified for PoC)
+-- -----------------------------------------------------------------------------
+
+data CsiRsInfo = CsiRsInfo
+  { crValid        :: Bit
+  , crPduIndex     :: BitVector 16
+  , crBwpSize      :: BitVector 16
+  , crBwpStart     :: BitVector 16
+  , crStartRb      :: BitVector 16
+  , crNrb          :: BitVector 16
+  , crScramblingId :: BitVector 16
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullCsiRsInfo :: CsiRsInfo
+nullCsiRsInfo = CsiRsInfo 0 0 0 0 0 0 0
 
 -- =============================================================================
 -- TX_DATA Types

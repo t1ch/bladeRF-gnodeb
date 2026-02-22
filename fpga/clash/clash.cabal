@@ -95,8 +95,12 @@ library
     FapiMsgDlTti
     FapiMsgSlot
     FapiMsgTxData
+    FapiDlPduPdsch
+    FapiDlPduPdcch
+    FapiDlPduSsb
+    FapiDlPduCsiRs
     NewRadioCRC
-    ParallelCRC
+    StreamingCRC
   default-language: Haskell2010
 
 -- Builds the executable 'clash', with clash project in scope
