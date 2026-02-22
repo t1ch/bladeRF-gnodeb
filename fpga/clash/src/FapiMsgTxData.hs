@@ -162,27 +162,11 @@ parseTxDataDword st dw _bodyDwIdx =
           tlvRead = tpTlvDwRead st + 1
           tlvDone = tlvRead >= tpTlvLenDw st
 
-          isFirstDw = tpTlvDwRead st == 0
-
-          -- CRC phase assignment per PoC pattern:
-          --   First dword of TB:  CRCStarting  (natural bit order)
-          --   Middle dwords:      CRCCalculating (bit-reversed input/reg)
-          --   Last dword of TB:   CRCDone (bit-reversed + output reversal)
-          --
-          -- Note: when TB is a single dword, isFirstDw and tlvDone are
-          -- both true. CRCStarting takes priority since the first-word
-          -- natural-order seeding must occur; the output reversal is
-          -- deferred to finalizeNrCrc.
-          crcSt = if isFirstDw
-                    then (tpCrcState st) { ncCrcPhase = CRCStarting }
-                    else if tlvDone
-                      then (tpCrcState st) { ncCrcPhase = CRCDone }
-                      else (tpCrcState st) { ncCrcPhase = CRCCalculating }
-
-          -- Feed each inline TB data dword through the CRC engine
+          -- Feed each inline TB data dword through the CRC engine.
+          -- Pure MSB-first — no phase tracking or bit reversal needed.
           crc' = if isInline
-                   then updateNrCrc crcSt dw
-                   else crcSt
+                   then updateNrCrc (tpCrcState st) dw
+                   else tpCrcState st
 
           pduRemain = tpPduRemainDw st - 1
           pduNum    = tpCurPdu st
@@ -252,9 +236,8 @@ parseTxDataDword st dw _bodyDwIdx =
 -- Response Builder
 -- =============================================================================
 
-processTxDataResponse :: PhyState -> FapiParsedReq -> BitVector 32
-                     -> FapiRespPayload
-processTxDataResponse curPhy req crc =
+processTxDataResponse :: PhyState -> FapiParsedReq -> FapiRespPayload
+processTxDataResponse curPhy req =
   let handle  = prHandle  req
       phyId   = prPhyId   req
       bodyDw0 = prBodyDw0 req
@@ -271,7 +254,6 @@ processTxDataResponse curPhy req crc =
       , rpPhyState = phyStateToVal curPhy
       , rpSfn      = sfn
       , rpSlot     = slot
-      , rpCrc      = crc
       }
     _ -> FapiRespPayload
       { rpValid    = 1
@@ -283,5 +265,4 @@ processTxDataResponse curPhy req crc =
       , rpPhyState = phyStateToVal curPhy
       , rpSfn      = 0
       , rpSlot     = 0
-      , rpCrc      = 0
       }
