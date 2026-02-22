@@ -26,6 +26,9 @@ module GNodeBFAPITypes
     -- * NR CRC types
   , NrCrcType(..)
   , NrCrcState(..), nullNrCrcState
+    -- * Code Block Segmentation types
+  , CbBaseGraph(..)
+  , CbBuffer(..), nullCbBuffer
     -- * DL_TTI types
   , DlPduType(..), dlPduTypeFromId
   , DlTtiInfo(..), nullDlTtiInfo
@@ -42,7 +45,8 @@ module GNodeBFAPITypes
   , bodyLenToDwords, maxBodyDwords
     -- * Constants
   , maxPdschPerSlot, maxPdcchPerSlot, maxSsbPerSlot, maxCsiRsPerSlot
-  , maxTbDwords, maxCdcWords
+  , maxTbDwords, maxTbBufDwords, maxCdcWords
+  , bg1BcbDwords, bg2BcbDwords, maxCbDwords
   ) where
 
 import Clash.Prelude
@@ -314,6 +318,60 @@ nullNrCrcState = NrCrcState
   }
 
 -- =============================================================================
+-- Code Block Segmentation (3GPP TS 38.212 Sec 5.2.2)
+-- =============================================================================
+--
+-- CBS parameters are computed once in BP_TLV_HEADER from the TB size,
+-- then CB CRC-24B accumulation runs in parallel with TB CRC during
+-- BP_TLV_DATA streaming.
+
+data CbBaseGraph = BG1 | BG2 deriving (Show, Eq, Generic, NFDataX)
+
+-- | CB payload capacity in dwords, without CB CRC overhead.
+--   BG1: floor(8424 / 32) = 263
+--   BG2: floor(3816 / 32) = 119
+bg1BcbDwords :: Unsigned 16
+bg1BcbDwords = 263
+
+bg2BcbDwords :: Unsigned 16
+bg2BcbDwords = 119
+
+-- | Maximum CB buffer size in dwords (263 payload + 1 CRC-24B + 1 guard).
+maxCbDwords :: Unsigned 16
+maxCbDwords = 265
+
+-- | Per-CB output buffer, populated inline during BP_TLV_DATA streaming.
+--   cbReady=1 signals that the CB is complete and ready for LDPC.
+data CbBuffer = CbBuffer
+  { cbData       :: Vec 265 (BitVector 32)
+  , cbLenDwords  :: Unsigned 16
+  , cbIndex      :: Unsigned 8    -- 0-based CB index within the TB
+  , cbTotal      :: Unsigned 8    -- C (total number of CBs)
+  , cbPduIndex   :: BitVector 16
+  , cbSfn        :: BitVector 16
+  , cbSlot       :: BitVector 16
+  , cbCrcPresent :: Bit           -- 1 iff CRC-24B was appended
+  , cbCrc        :: BitVector 32  -- CRC-24B value (0 if absent)
+  , cbReady      :: Bit           -- set when CB is complete
+  , cbConsumed   :: Bit           -- set by downstream (LDPC) when taken
+  } deriving (Show, Eq, Generic, NFDataX)
+
+nullCbBuffer :: CbBuffer
+nullCbBuffer = CbBuffer
+  { cbData       = repeat 0
+  , cbLenDwords  = 0
+  , cbIndex      = 0
+  , cbTotal      = 0
+  , cbPduIndex   = 0
+  , cbSfn        = 0
+  , cbSlot       = 0
+  , cbCrcPresent = 0
+  , cbCrc        = 0
+  , cbReady      = 0
+  , cbConsumed   = 0
+  }
+
+-- =============================================================================
 -- DL_TTI Per-message Parser State
 -- =============================================================================
 --
@@ -364,6 +422,14 @@ data TxDataParseState = TxDataParseState
   , tpTbWriteIdx   :: Unsigned 16   -- ^ Next write position
   -- CRC accumulator for inline TB integrity checking
   , tpCrcState     :: NrCrcState    -- ^ Inline TB CRC accumulator
+  -- CBS (computed in BP_TLV_HEADER, consumed in BP_TLV_DATA)
+  , tpCbBaseGraph  :: CbBaseGraph   -- ^ BG1 or BG2
+  , tpCbNumCbs     :: Unsigned 8    -- ^ C: total number of code blocks
+  , tpCbPayDw      :: Unsigned 16   -- ^ kDw: payload dwords per CB
+  , tpCbIndex      :: Unsigned 8    -- ^ Current CB being assembled (0..C-1)
+  , tpCbDwInBlock  :: Unsigned 16   -- ^ Dwords written to current CB so far
+  , tpCbCrcState   :: NrCrcState    -- ^ CRC-24B accumulator for current CB
+  , tpCbBuffer     :: CbBuffer      -- ^ Current CB being built / most recently completed
   } deriving (Show, Eq, Generic, NFDataX)
 
 nullTxDataParseState :: TxDataParseState
@@ -380,6 +446,13 @@ nullTxDataParseState = TxDataParseState
   , tpTbBuffer     = nullTbBuffer
   , tpTbWriteIdx   = 0
   , tpCrcState     = nullNrCrcState
+  , tpCbBaseGraph  = BG2
+  , tpCbNumCbs     = 1
+  , tpCbPayDw      = 0
+  , tpCbIndex      = 0
+  , tpCbDwInBlock  = 0
+  , tpCbCrcState   = nullNrCrcState
+  , tpCbBuffer     = nullCbBuffer
   }
 
 -- =============================================================================
@@ -427,6 +500,11 @@ maxCsiRsPerSlot = 4
 
 maxTbDwords :: Unsigned 16
 maxTbDwords = 256
+
+-- | TB buffer capacity including interleaved CB CRC-24B dwords and TB CRC.
+-- BG1/C=1: 262 payload + 1 TB CRC = 263; BG2/C=2: 120 payload + 2 CB CRCs + 1 TB CRC = 123.
+maxTbBufDwords :: Unsigned 16
+maxTbBufDwords = 264
 
 maxCdcWords :: Unsigned 16
 maxCdcWords = 16
@@ -569,7 +647,7 @@ nullTxDataPdu = TxDataPdu 0 0 0 0 0 0
 -- =============================================================================
 
 data TbBuffer = TbBuffer
-  { tbData       :: Vec 256 (BitVector 32)
+  { tbData       :: Vec 264 (BitVector 32)
   , tbLenDwords  :: Unsigned 16
   , tbPduIndex   :: BitVector 16
   , tbSfn        :: BitVector 16
