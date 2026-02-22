@@ -67,10 +67,10 @@ parallelCRCStep poly currentCrc dataChunk =
   foldl serialStep currentCrc (bv2v dataChunk)
   where
     serialStep :: BitVector crcN -> Bit -> BitVector crcN
-    serialStep acc bit =
-      let feedback = msb acc `xor` bit
-          shifted  = shiftL acc 1
-      in if feedback == high then shifted `xor` poly else shifted
+    serialStep acc inBit =
+      let fb      = msb acc `xor` inBit
+          shifted = shiftL acc 1
+      in if fb == high then shifted `xor` poly else shifted
 
 -- =============================================================================
 -- Clocked Streaming CRC Component
