@@ -79,13 +79,6 @@ data TxOutput = TxOutput
   , txoTbReady      :: Bit
   , txoTbLenDwords  :: Unsigned 16
   , txoTbPduIndex   :: BitVector 16
-  -- CB segmentation outputs
-  , txoCbReady      :: Bit
-  , txoCbIndex      :: Unsigned 8
-  , txoCbTotal      :: Unsigned 8
-  , txoCbLenDwords  :: Unsigned 16
-  , txoCbPduIndex   :: BitVector 16
-  , txoCbCrcPresent :: Bit
   } deriving (Show, Eq, Generic, NFDataX)
 
 -- =============================================================================
@@ -382,9 +375,8 @@ txMealy current (tx_packet_empty, tx_packet_control, fifoFull) =
           else Nothing
       _ -> Nothing
 
-    -- TB and CB status from TX_DATA parser sub-state
+    -- TB status from TX_DATA parser sub-state
     tbBuf = tpTbBuffer (txTxDataPs current)
-    cbBuf = tpCbBuffer (txTxDataPs current)
 
     output = TxOutput
       { tx_packet_ready = tx_ready
@@ -393,11 +385,5 @@ txMealy current (tx_packet_empty, tx_packet_control, fifoFull) =
       , txoTbReady      = tbReady tbBuf
       , txoTbLenDwords  = tbLenDwords tbBuf
       , txoTbPduIndex   = tbPduIndex tbBuf
-      , txoCbReady      = cbReady cbBuf
-      , txoCbIndex      = cbIndex cbBuf
-      , txoCbTotal      = cbTotal cbBuf
-      , txoCbLenDwords  = cbLenDwords cbBuf
-      , txoCbPduIndex   = cbPduIndex cbBuf
-      , txoCbCrcPresent = cbCrcPresent cbBuf
       }
   in (future, output)

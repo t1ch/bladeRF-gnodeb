@@ -145,16 +145,8 @@ parseTxDataDword st dw _bodyDwIdx =
           crc'    = (tpCrcState st) { ncCrcType = crcType }
 
           -- Compute CBS parameters combinationally from TB size
-          (cbBg, cbC, cbKDw) = computeCbParams tbLenBytes
+          (_, cbC, cbKDw) = computeCbParams tbLenBytes
           cbCrcInit = nullNrCrcState { ncCrcType = NR_CRC24B }
-
-          -- Initialise CbBuffer with per-PDU metadata
-          initCbBuf = nullCbBuffer
-            { cbTotal    = cbC
-            , cbPduIndex = txpPduIndex curTp
-            , cbSfn      = tdSfn tdi
-            , cbSlot     = tdSlot tdi
-            }
 
       in st { tpInfo        = tdi { tdPdus = newPdus }
             , tpTlvLenDw    = clampedLen
@@ -165,13 +157,10 @@ parseTxDataDword st dw _bodyDwIdx =
                                 then BP_PDU_HEADER
                                 else BP_TLV_DATA
             -- CBS
-            , tpCbBaseGraph = cbBg
             , tpCbNumCbs    = cbC
             , tpCbPayDw     = cbKDw
-            , tpCbIndex     = 0
             , tpCbDwInBlock = 0
             , tpCbCrcState  = cbCrcInit
-            , tpCbBuffer    = initCbBuf
             }
 
     -- TLV value: capture TB payload dwords and feed through CRC engines.
@@ -206,27 +195,7 @@ parseTxDataDword st dw _bodyDwIdx =
           -- CB tracking (parallel to TB CRC)
           -- -------------------------------------------------------------------
 
-          -- If the previous CB just completed (cbReady=1 in buffer),
-          -- create a fresh buffer for the new CB; otherwise continue building.
-          cbBufCurr =
-            if cbReady (tpCbBuffer st) == 1
-              then nullCbBuffer
-                     { cbTotal    = tpCbNumCbs st
-                     , cbIndex    = tpCbIndex st
-                     , cbPduIndex = cbPduIndex (tpCbBuffer st)
-                     , cbSfn      = cbSfn (tpCbBuffer st)
-                     , cbSlot     = cbSlot (tpCbBuffer st)
-                     }
-              else tpCbBuffer st
-
-          -- Write current dword into CB buffer at position cbDwPos
-          cbDwPos = tpCbDwInBlock st
-          cbBufWithDw =
-            if isInline && resize cbDwPos < maxCbDwords
-              then cbBufCurr { cbData = replace cbDwPos dw (cbData cbBufCurr) }
-              else cbBufCurr
-
-          -- Dwords written to current CB after this dword
+          cbDwPos  = tpCbDwInBlock st
           cbDwNext = cbDwPos + 1
 
           -- CB CRC-24B update (only when there are multiple CBs)
@@ -239,15 +208,6 @@ parseTxDataDword st dw _bodyDwIdx =
 
           -- Finalized CRC-24B value (used for both intermediate and last CB)
           cbCrcVal = finalizeNrCrc cbCrc'
-
-          -- Completed intermediate CB buffer (cbReady=1, CRC appended)
-          doneCbBuf = cbBufWithDw
-            { cbLenDwords  = cbDwNext + 1  -- +1 for CRC-24B dword
-            , cbCrcPresent = 1
-            , cbCrc        = cbCrcVal
-            , cbReady      = 1
-            , cbData       = replace cbDwNext cbCrcVal (cbData cbBufWithDw)
-            }
 
           -- Fresh CRC-24B accumulator for the next CB
           freshCbCrc = nullNrCrcState { ncCrcType = NR_CRC24B }
@@ -291,25 +251,6 @@ parseTxDataDword st dw _bodyDwIdx =
                    , tbReady     = 1
                    }
 
-                 -- Finalise last CB.
-                 -- C > 1: append CRC-24B.  C = 1: no CB CRC (TB CRC covers it).
-                 lastCbBuf =
-                   if tpCbNumCbs st > 1
-                     then cbBufWithDw
-                            { cbLenDwords  = cbDwNext + 1
-                            , cbCrcPresent = 1
-                            , cbCrc        = cbCrcVal
-                            , cbReady      = 1
-                            , cbData       = replace cbDwNext cbCrcVal
-                                               (cbData cbBufWithDw)
-                            }
-                     else cbBufWithDw
-                            { cbLenDwords  = cbDwNext
-                            , cbCrcPresent = 0
-                            , cbCrc        = 0
-                            , cbReady      = 1
-                            }
-
              in if nextPdu >= nPdus
                   then st { tpTbBuffer    = finalBuf
                           , tpTbWriteIdx  = wIdxAfterCrc
@@ -318,7 +259,6 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpCrcState    = crc'
                           , tpInfo        = tdi { tdPdus = newPdus }
                           , tpPhase       = BP_DONE
-                          , tpCbBuffer    = lastCbBuf
                           , tpCbDwInBlock = cbDwNext
                           , tpCbCrcState  = cbCrc'
                           }
@@ -330,7 +270,6 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpInfo        = tdi { tdPdus = newPdus }
                           , tpCurPdu      = nextPdu
                           , tpPhase       = BP_PDU_HEADER
-                          , tpCbBuffer    = lastCbBuf
                           , tpCbDwInBlock = cbDwNext
                           , tpCbCrcState  = cbCrc'
                           }
@@ -351,9 +290,7 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpTlvDwRead   = tlvRead
                           , tpPduRemainDw = pduRemain
                           , tpCrcState    = crc'
-                          , tpCbBuffer    = doneCbBuf
                           , tpCbDwInBlock = 0
-                          , tpCbIndex     = tpCbIndex st + 1
                           , tpCbCrcState  = freshCbCrc
                           }
                   else
@@ -363,7 +300,6 @@ parseTxDataDword st dw _bodyDwIdx =
                        , tpTlvDwRead   = tlvRead
                        , tpPduRemainDw = pduRemain
                        , tpCrcState    = crc'
-                       , tpCbBuffer    = cbBufWithDw
                        , tpCbDwInBlock = cbDwNext
                        , tpCbCrcState  = cbCrc'
                        }

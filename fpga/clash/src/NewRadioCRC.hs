@@ -136,16 +136,17 @@ updateNrCrc st dw =
 -- | Extract the computed CRC value after the last TB dword has been
 --   processed.
 --
---   Returns a 32-bit vector with zero padding in the MSBs:
+--   Returns a 32-bit vector with the CRC in the most-significant bits
+--   and zero padding in the LSBs (MSB-first layout):
 --
---     CRC-24A/B → bits [31:24] = 0, CRC in bits [23:0]
---     CRC-16    → bits [31:16] = 0, CRC in bits [15:0]
+--     CRC-24A/B → CRC in bits [31:8],  zeros in bits [7:0]
+--     CRC-16    → CRC in bits [31:16], zeros in bits [15:0]
 --
 --   (3GPP TS 38.212 Sec 7.2.1)
 finalizeNrCrc :: NrCrcState -> BitVector 32
 finalizeNrCrc st =
   case ncCrcType st of
-    NR_CRC24A -> (0 :: BitVector 8)  ++# ncCrc24AReg st
-    NR_CRC24B -> (0 :: BitVector 8)  ++# ncCrc24BReg st
-    NR_CRC16  -> (0 :: BitVector 16) ++# ncCrc16Reg st
+    NR_CRC24A -> ncCrc24AReg st ++# (0 :: BitVector 8)
+    NR_CRC24B -> ncCrc24BReg st ++# (0 :: BitVector 8)
+    NR_CRC16  -> ncCrc16Reg  st ++# (0 :: BitVector 16)
     _         -> 0

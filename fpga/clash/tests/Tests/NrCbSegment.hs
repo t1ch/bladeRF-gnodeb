@@ -85,18 +85,14 @@ runTxDataParser tbBytes =
 
   in go nullTxDataParseState dwords 0
 
--- Small TB: C=1, cbReady=1, cbCrcPresent=0
+-- Small TB: C=1, no CB CRC
 test_parseTxData_small :: TestTree
-test_parseTxData_small = testCase "small TB: C=1, cbReady=1, no CB CRC" $ do
-  let st   = runTxDataParser 100
-      cbuf = tpCbBuffer st
-      tb   = tpTbBuffer st
-  tpCbNumCbs st        @?= 1
-  cbReady      cbuf    @?= 1
-  cbCrcPresent cbuf    @?= 0
-  cbTotal      cbuf    @?= 1
+test_parseTxData_small = testCase "small TB: C=1, no CB CRC" $ do
+  let st = runTxDataParser 100
+      tb = tpTbBuffer st
+  tpCbNumCbs st  @?= 1
   -- 25 payload dwords + 1 CRC-16 dword = 26
-  tbLenDwords  tb      @?= 26
+  tbLenDwords tb @?= 26
 
 -- 476-byte TB: BG2, C=2, kDw=60.
 -- Expected TB buffer layout:
@@ -108,24 +104,16 @@ test_parseTxData_small = testCase "small TB: C=1, cbReady=1, no CB CRC" $ do
 --   tbLenDwords = 122
 test_parseTxData_cbCrcInTbBuf :: TestTree
 test_parseTxData_cbCrcInTbBuf = testCase "476-byte TB: CB CRC-24B interleaved in TB buffer" $ do
-  let st   = runTxDataParser 476
-      cbuf = tpCbBuffer st
-      tb   = tpTbBuffer st
-  tpCbNumCbs st     @?= 2
-  tbLenDwords tb    @?= 122
-  cbReady     cbuf  @?= 1
-  cbCrcPresent cbuf @?= 1
+  let st = runTxDataParser 476
+      tb = tpTbBuffer st
+  tpCbNumCbs st  @?= 2
+  tbLenDwords tb @?= 122
 
--- Large TB: C=2, last CB cbReady=1, cbCrcPresent=1
+-- Large TB: C=2
 test_parseTxData_large :: TestTree
-test_parseTxData_large = testCase "large TB: C=2, last CB cbReady=1, CRC present" $ do
-  let st   = runTxDataParser 1100
-      cbuf = tpCbBuffer st
-  tpCbNumCbs st        @?= 2
-  cbReady      cbuf    @?= 1
-  cbCrcPresent cbuf    @?= 1
-  cbTotal      cbuf    @?= 2
-  cbIndex      cbuf    @?= 1   -- second CB (0-indexed)
+test_parseTxData_large = testCase "large TB: C=2" $ do
+  let st = runTxDataParser 1100
+  tpCbNumCbs st @?= 2
 
 -- =============================================================================
 -- Test group

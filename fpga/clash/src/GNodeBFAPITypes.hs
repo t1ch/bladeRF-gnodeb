@@ -28,7 +28,6 @@ module GNodeBFAPITypes
   , NrCrcState(..), nullNrCrcState
     -- * Code Block Segmentation types
   , CbBaseGraph(..)
-  , CbBuffer(..), nullCbBuffer
     -- * DL_TTI types
   , DlPduType(..), dlPduTypeFromId
   , DlTtiInfo(..), nullDlTtiInfo
@@ -46,7 +45,7 @@ module GNodeBFAPITypes
     -- * Constants
   , maxPdschPerSlot, maxPdcchPerSlot, maxSsbPerSlot, maxCsiRsPerSlot
   , maxTbDwords, maxTbBufDwords, maxCdcWords
-  , bg1BcbDwords, bg2BcbDwords, maxCbDwords
+  , bg1BcbDwords, bg2BcbDwords
   ) where
 
 import Clash.Prelude
@@ -336,40 +335,6 @@ bg1BcbDwords = 263
 bg2BcbDwords :: Unsigned 16
 bg2BcbDwords = 119
 
--- | Maximum CB buffer size in dwords (263 payload + 1 CRC-24B + 1 guard).
-maxCbDwords :: Unsigned 16
-maxCbDwords = 265
-
--- | Per-CB output buffer, populated inline during BP_TLV_DATA streaming.
---   cbReady=1 signals that the CB is complete and ready for LDPC.
-data CbBuffer = CbBuffer
-  { cbData       :: Vec 265 (BitVector 32)
-  , cbLenDwords  :: Unsigned 16
-  , cbIndex      :: Unsigned 8    -- 0-based CB index within the TB
-  , cbTotal      :: Unsigned 8    -- C (total number of CBs)
-  , cbPduIndex   :: BitVector 16
-  , cbSfn        :: BitVector 16
-  , cbSlot       :: BitVector 16
-  , cbCrcPresent :: Bit           -- 1 iff CRC-24B was appended
-  , cbCrc        :: BitVector 32  -- CRC-24B value (0 if absent)
-  , cbReady      :: Bit           -- set when CB is complete
-  , cbConsumed   :: Bit           -- set by downstream (LDPC) when taken
-  } deriving (Show, Eq, Generic, NFDataX)
-
-nullCbBuffer :: CbBuffer
-nullCbBuffer = CbBuffer
-  { cbData       = repeat 0
-  , cbLenDwords  = 0
-  , cbIndex      = 0
-  , cbTotal      = 0
-  , cbPduIndex   = 0
-  , cbSfn        = 0
-  , cbSlot       = 0
-  , cbCrcPresent = 0
-  , cbCrc        = 0
-  , cbReady      = 0
-  , cbConsumed   = 0
-  }
 
 -- =============================================================================
 -- DL_TTI Per-message Parser State
@@ -423,13 +388,10 @@ data TxDataParseState = TxDataParseState
   -- CRC accumulator for inline TB integrity checking
   , tpCrcState     :: NrCrcState    -- ^ Inline TB CRC accumulator
   -- CBS (computed in BP_TLV_HEADER, consumed in BP_TLV_DATA)
-  , tpCbBaseGraph  :: CbBaseGraph   -- ^ BG1 or BG2
   , tpCbNumCbs     :: Unsigned 8    -- ^ C: total number of code blocks
   , tpCbPayDw      :: Unsigned 16   -- ^ kDw: payload dwords per CB
-  , tpCbIndex      :: Unsigned 8    -- ^ Current CB being assembled (0..C-1)
   , tpCbDwInBlock  :: Unsigned 16   -- ^ Dwords written to current CB so far
   , tpCbCrcState   :: NrCrcState    -- ^ CRC-24B accumulator for current CB
-  , tpCbBuffer     :: CbBuffer      -- ^ Current CB being built / most recently completed
   } deriving (Show, Eq, Generic, NFDataX)
 
 nullTxDataParseState :: TxDataParseState
@@ -446,13 +408,10 @@ nullTxDataParseState = TxDataParseState
   , tpTbBuffer     = nullTbBuffer
   , tpTbWriteIdx   = 0
   , tpCrcState     = nullNrCrcState
-  , tpCbBaseGraph  = BG2
   , tpCbNumCbs     = 1
   , tpCbPayDw      = 0
-  , tpCbIndex      = 0
   , tpCbDwInBlock  = 0
   , tpCbCrcState   = nullNrCrcState
-  , tpCbBuffer     = nullCbBuffer
   }
 
 -- =============================================================================

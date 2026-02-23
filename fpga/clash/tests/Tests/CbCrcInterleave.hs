@@ -10,10 +10,6 @@
 --     • C=1 (100-byte TB): no CB CRC dwords inserted; TB CRC-16 at slot 25.
 --     • C=2 BG2 (476-byte TB): exact slot positions for CB0 CRC, CB1 CRC,
 --       and TB CRC-16 verified against independently computed values.
---     • Intermediate cbReady signal: fires exactly after the CB0 boundary
---       and is cleared on the first dword of CB1.
---     • Final CbBuffer state: cbIndex, cbLenDwords, cbCrc, and cbData
---       for the last CB checked against expected values.
 
 module Tests.CbCrcInterleave (cbCrcInterleaveTests) where
 
@@ -79,13 +75,6 @@ runParser tbBytes =
   foldl (\st dw -> parseTxDataDword st dw 0)
         nullTxDataParseState
         (buildDwords tbBytes)
-
--- | Return one state per dword consumed (state *after* that dword).
-runParserSteps :: Int -> [TxDataParseState]
-runParserSteps tbBytes =
-  drop 1 $ scanl (\st dw -> parseTxDataDword st dw 0)
-               nullTxDataParseState
-               (buildDwords tbBytes)
 
 -- =============================================================================
 -- C=1 (100-byte TB, no CB CRC interleaving)
@@ -189,77 +178,6 @@ test_476_crc_slots_differ_from_payload =
                (buf !! 121 /= 0xDEADBEEF)
 
 -- =============================================================================
--- 476-byte TB — intermediate cbReady signal
--- =============================================================================
---
--- Sequence indices for buildDwords 476:
---   [0]       SFN/Slot
---   [1]       nPDUs
---   [2]       pduLength
---   [3]       pduIndex/cwIndex
---   [4]       numTLV
---   [5]       tag
---   [6]       tbLenBytes       ← BP_TLV_HEADER fires here, kDw=60 set
---   [7..125]  payload (119 dwords)
---
--- cbBoundary fires after the 60th payload dword (sequence index 66).
--- At that point tpCbBuffer has cbReady=1, cbIndex=0.
--- On the next dword (index 67) a fresh buffer for CB1 is started:
--- cbReady=0, cbIndex=1.
-
-test_476_intermediate_cbReady :: TestTree
-test_476_intermediate_cbReady =
-  testCase "476-byte: cbReady=1 fires at step 66 (CB0 boundary)" $ do
-    let steps = runParserSteps 476
-        cbuf  = tpCbBuffer (steps !! 66)
-    cbReady cbuf @?= 1
-    cbIndex cbuf @?= 0
-    cbTotal cbuf @?= 2
-
-test_476_cb1_buffer_fresh :: TestTree
-test_476_cb1_buffer_fresh =
-  testCase "476-byte: cbReady=0 and cbIndex=1 at step 67 (CB1 started)" $ do
-    let steps = runParserSteps 476
-        cbuf  = tpCbBuffer (steps !! 67)
-    cbReady cbuf @?= 0
-    cbIndex cbuf @?= 1
-
--- =============================================================================
--- 476-byte TB — final CbBuffer state (last CB = CB1)
--- =============================================================================
---
--- After tlvDone, tpCbBuffer holds the last CB:
---   cbIndex      = 1  (second CB, 0-based)
---   cbTotal      = 2
---   cbLenDwords  = 60  (59 payload + 1 CRC-24B)
---   cbCrcPresent = 1
---   cbCrc        = CRC-24B of 59 dwords of 0xDEADBEEF
---   cbData[0..58]  = 0xDEADBEEF
---   cbData[59]     = CB1 CRC-24B
-
-test_476_lastCb_metadata :: TestTree
-test_476_lastCb_metadata =
-  testCase "476-byte: last CB metadata (index, total, lenDwords, crcPresent)" $ do
-    let cbuf = tpCbBuffer (runParser 476)
-    cbIndex      cbuf @?= 1
-    cbTotal      cbuf @?= 2
-    cbLenDwords  cbuf @?= 60
-    cbCrcPresent cbuf @?= 1
-
-test_476_lastCb_crcValue :: TestTree
-test_476_lastCb_crcValue =
-  testCase "476-byte: last CB cbCrc == CRC-24B over 59 dwords" $
-    cbCrc (tpCbBuffer (runParser 476)) @?= expectedCb1Crc476
-
-test_476_lastCb_data :: TestTree
-test_476_lastCb_data =
-  testCase "476-byte: CB1 cbData payload and CRC dwords correct" $ do
-    let cdata = toList (cbData (tpCbBuffer (runParser 476)))
-    cdata !! 0  @?= 0xDEADBEEF       -- first payload dword of CB1
-    cdata !! 58 @?= 0xDEADBEEF       -- last payload dword of CB1
-    cdata !! 59 @?= expectedCb1Crc476 -- CRC-24B appended at position 59
-
--- =============================================================================
 -- Test group
 -- =============================================================================
 
@@ -278,14 +196,5 @@ cbCrcInterleaveTests = testGroup "CB CRC interleaving"
       , test_476_cb1_crc
       , test_476_tb_crc
       , test_476_crc_slots_differ_from_payload
-      ]
-  , testGroup "C=2 BG2: intermediate cbReady signal (476-byte TB)"
-      [ test_476_intermediate_cbReady
-      , test_476_cb1_buffer_fresh
-      ]
-  , testGroup "C=2 BG2: final CbBuffer state (476-byte TB)"
-      [ test_476_lastCb_metadata
-      , test_476_lastCb_crcValue
-      , test_476_lastCb_data
       ]
   ]

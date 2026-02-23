@@ -51,12 +51,6 @@ createDomain vSystem{vName="DomRx", vPeriod=hzToPeriod 80e6}
             , PortName "tb_ready"
             , PortName "tb_len_dwords"
             , PortName "tb_pdu_index"
-            , PortName "cb_ready"
-            , PortName "cb_index"
-            , PortName "cb_total"
-            , PortName "cb_len_dwords"
-            , PortName "cb_pdu_index"
-            , PortName "cb_crc_present"
             ]
       }
   ) #-}
@@ -83,12 +77,6 @@ topEntity
      , Signal DomTx Bit
      , Signal DomTx (BitVector 16)
      , Signal DomTx (BitVector 16)
-     , Signal DomTx Bit
-     , Signal DomTx (BitVector 8)
-     , Signal DomTx (BitVector 8)
-     , Signal DomTx (BitVector 16)
-     , Signal DomTx (BitVector 16)
-     , Signal DomTx Bit
      )
 topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
           txClk txRst txEnBit
@@ -112,12 +100,6 @@ topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
     tbReadyOut      = txoTbReady      <$> txOutput
     tbLenDwOut      = pack . txoTbLenDwords <$> txOutput
     tbPduIndexOut   = txoTbPduIndex   <$> txOutput
-    cbReadyOut      = txoCbReady      <$> txOutput
-    cbIndexOut      = pack . txoCbIndex      <$> txOutput
-    cbTotalOut      = pack . txoCbTotal      <$> txOutput
-    cbLenDwOut      = pack . txoCbLenDwords  <$> txOutput
-    cbPduIndexOut   = txoCbPduIndex   <$> txOutput
-    cbCrcPresentOut = txoCbCrcPresent <$> txOutput
 
     rxEn = toEnable (fmap bitToBool rxEnBit)
 
@@ -139,5 +121,4 @@ topEntity rxClk rxRst rxEnBit rxPktEn rxPktReady
     ( rxPktSopOut, rxPktEopOut, rxPktDataOut, rxPktDvOut
     , txReady, txLeds
     , tbReadyOut, tbLenDwOut, tbPduIndexOut
-    , cbReadyOut, cbIndexOut, cbTotalOut, cbLenDwOut, cbPduIndexOut, cbCrcPresentOut
     )
