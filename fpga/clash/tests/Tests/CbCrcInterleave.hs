@@ -8,8 +8,9 @@
 --
 --   Test cases:
 --     • C=1 (100-byte TB): no CB CRC dwords inserted; TB CRC-16 at slot 25.
---     • C=2 BG2 (476-byte TB): exact slot positions for CB0 CRC, CB1 CRC,
---       and TB CRC-16 verified against independently computed values.
+--     • C=1 (476-byte TB): after Kcb threshold fix; TB CRC-16 at slot 119.
+--     • Seeded C=2 regression: synthetic state fed 6 dwords; verifies that
+--       the last CB's CRC-24B folds in the TB CRC dword per spec §5.2.2.
 
 module Tests.CbCrcInterleave (cbCrcInterleaveTests) where
 
@@ -25,6 +26,12 @@ import NewRadioCRC (updateNrCrc, finalizeNrCrc)
 -- =============================================================================
 -- CRC helpers (independent reference implementation)
 -- =============================================================================
+
+-- | CRC-24A over a list of 32-bit dwords.
+crc24A :: [BitVector 32] -> BitVector 32
+crc24A dws =
+  let st0 = nullNrCrcState { ncCrcType = NR_CRC24A }
+  in finalizeNrCrc (foldl updateNrCrc st0 dws)
 
 -- | CRC-24B over a list of 32-bit dwords.
 crc24B :: [BitVector 32] -> BitVector 32
@@ -103,79 +110,115 @@ test_c1_tbLenDwords =
     tbLenDwords (tpTbBuffer (runParser 100)) @?= 26
 
 -- =============================================================================
--- C=2 BG2 (476-byte TB) — precomputed reference values
+-- C=1 (476-byte TB) — after Kcb threshold fix
 -- =============================================================================
 --
--- 476 bytes = 119 payload dwords (exact), tbTotDw = 120.
--- BG2 (B_bits = 3808 ≤ 3824), bcbDw = 119.
--- C = ceil(120 / 119) = 2, kDw = ceil(120 / 2) = 60.
+-- 476 bytes = 119 payload dwords, tbTotDw = 120.
+-- BG2 (B_bits = 3808 ≤ 3824), Kcb_BG2 = 120 dwords.
+-- 120 > 120 is false → C = 1, kDw = 120.
 -- TB CRC type: CRC-16 (476 ≤ 478 bytes threshold).
 --
 -- TB buffer layout:
---   [0  .. 59]  CB0 payload   (60 dwords of 0xDEADBEEF)
---   [60]        CB0 CRC-24B
---   [61 .. 119] CB1 payload   (59 dwords of 0xDEADBEEF)
---   [120]       CB1 CRC-24B
---   [121]       TB  CRC-16    (over all 119 payload dwords)
---   tbLenDwords = 122
+--   [0  .. 118]  payload (119 dwords of 0xDEADBEEF)
+--   [119]        TB CRC-16
+--   tbLenDwords = 120
 
-expectedCb0Crc476 :: BitVector 32
-expectedCb0Crc476 = crc24B (replicate 60 0xDEADBEEF)
+test_476_c1_tbLenDwords :: TestTree
+test_476_c1_tbLenDwords =
+  testCase "476-byte C=1: tbLenDwords = 120" $
+    tbLenDwords (tpTbBuffer (runParser 476)) @?= 120
 
-expectedCb1Crc476 :: BitVector 32
-expectedCb1Crc476 = crc24B (replicate 59 0xDEADBEEF)
-
-expectedTbCrc476 :: BitVector 32
-expectedTbCrc476 = crc16 (replicate 119 0xDEADBEEF)
-
-test_476_tbLenDwords :: TestTree
-test_476_tbLenDwords =
-  testCase "476-byte: tbLenDwords = 122" $
-    tbLenDwords (tpTbBuffer (runParser 476)) @?= 122
-
-test_476_cb0_payload_boundary :: TestTree
-test_476_cb0_payload_boundary =
-  testCase "476-byte: CB0 boundary payload slots intact" $ do
+test_476_c1_payload_preserved :: TestTree
+test_476_c1_payload_preserved =
+  testCase "476-byte C=1: payload dwords written verbatim" $ do
     let buf = toList (tbData (tpTbBuffer (runParser 476)))
-    buf !! 0  @?= 0xDEADBEEF   -- first slot of CB0
-    buf !! 59 @?= 0xDEADBEEF   -- last slot of CB0 (slot 60 is the CRC)
+    buf !! 0   @?= 0xDEADBEEF   -- first payload slot
+    buf !! 118 @?= 0xDEADBEEF   -- last payload slot
 
-test_476_cb0_crc :: TestTree
-test_476_cb0_crc =
-  testCase "476-byte: CB0 CRC-24B at slot 60" $ do
+test_476_c1_tbCrc_at_slot119 :: TestTree
+test_476_c1_tbCrc_at_slot119 =
+  testCase "476-byte C=1: TB CRC-16 at slot 119" $ do
     let buf = toList (tbData (tpTbBuffer (runParser 476)))
-    buf !! 60 @?= expectedCb0Crc476
+    buf !! 119 @?= crc16 (replicate 119 0xDEADBEEF)
 
-test_476_cb1_payload_boundary :: TestTree
-test_476_cb1_payload_boundary =
-  testCase "476-byte: CB1 boundary payload slots intact" $ do
-    let buf = toList (tbData (tpTbBuffer (runParser 476)))
-    buf !! 61  @?= 0xDEADBEEF   -- first slot of CB1
-    buf !! 119 @?= 0xDEADBEEF   -- last slot of CB1 (slot 120 is the CRC)
+-- =============================================================================
+-- Seeded C=2 regression — Fix 2: last CB CRC-24B folds in TB CRC dword
+-- =============================================================================
+--
+-- Synthetic TxDataParseState seeded directly into BP_TLV_DATA with:
+--   tpCbNumCbs = 2, tpCbPayDw = 3, tpTlvLenDw = 6
+--   TB CRC type: CRC-24A (tpCrcState)
+--
+-- Feed 6 dwords of 0xDEADBEEF.  Expected buffer layout:
+--
+--   [0,1,2]  CB0 payload   (0xDEADBEEF × 3)
+--   [3]      CB0 CRC-24B   = crc24B [0xDEADBEEF × 3]
+--   [4,5,6]  CB1 payload   (0xDEADBEEF × 3)
+--   [7]      TB  CRC-24A   = crc24A [0xDEADBEEF × 6]
+--   [8]      CB1 CRC-24B   = crc24B ([0xDEADBEEF × 3] ++ [tbCrcDword])
+--   tbLenDwords = 9
+--
+-- This directly verifies that the last CB's CRC-24B covers the TB CRC dword.
 
-test_476_cb1_crc :: TestTree
-test_476_cb1_crc =
-  testCase "476-byte: CB1 CRC-24B at slot 120" $ do
-    let buf = toList (tbData (tpTbBuffer (runParser 476)))
-    buf !! 120 @?= expectedCb1Crc476
+seedState :: TxDataParseState
+seedState = nullTxDataParseState
+  { tpPhase        = BP_TLV_DATA
+  , tpTlvLenDw     = 6
+  , tpTlvDwRead    = 0
+  , tpCbNumCbs     = 2
+  , tpCbPayDw      = 3
+  , tpCbDwInBlock  = 0
+  , tpCrcState     = nullNrCrcState { ncCrcType = NR_CRC24A }
+  , tpCbCrcState   = nullNrCrcState { ncCrcType = NR_CRC24B }
+  , tpInfo         = nullTxDataInfo { tdNumPdus = 1 }
+  , tpPduRemainDw  = 6
+  }
 
-test_476_tb_crc :: TestTree
-test_476_tb_crc =
-  testCase "476-byte: TB CRC-16 at slot 121" $ do
-    let buf = toList (tbData (tpTbBuffer (runParser 476)))
-    buf !! 121 @?= expectedTbCrc476
+runSeededParser :: TxDataParseState
+runSeededParser =
+  foldl (\st dw -> parseTxDataDword st dw 0)
+        seedState
+        (replicate 6 (0xDEADBEEF :: BitVector 32))
 
--- Sanity: the CRC slots must not accidentally contain the payload pattern.
-test_476_crc_slots_differ_from_payload :: TestTree
-test_476_crc_slots_differ_from_payload =
-  testCase "476-byte: CRC slots differ from payload pattern (0xDEADBEEF)" $ do
-    let buf = toList (tbData (tpTbBuffer (runParser 476)))
-    assertBool "slot 60 (CB0 CRC) should not be 0xDEADBEEF"
-               (buf !! 60  /= 0xDEADBEEF)
-    assertBool "slot 120 (CB1 CRC) should not be 0xDEADBEEF"
-               (buf !! 120 /= 0xDEADBEEF)
-    assertBool "slot 121 (TB CRC) should not be 0xDEADBEEF"
-               (buf !! 121 /= 0xDEADBEEF)
+expectedCb0CrcSeeded :: BitVector 32
+expectedCb0CrcSeeded = crc24B (replicate 3 0xDEADBEEF)
+
+expectedTbCrcSeeded :: BitVector 32
+expectedTbCrcSeeded = crc24A (replicate 6 0xDEADBEEF)
+
+expectedCb1CrcSeeded :: BitVector 32
+expectedCb1CrcSeeded = crc24B (replicate 3 0xDEADBEEF ++ [expectedTbCrcSeeded])
+
+test_seeded_c2_tbLenDwords :: TestTree
+test_seeded_c2_tbLenDwords =
+  testCase "seeded C=2: tbLenDwords = 9" $
+    tbLenDwords (tpTbBuffer runSeededParser) @?= 9
+
+test_seeded_c2_cb0_crc_at_slot3 :: TestTree
+test_seeded_c2_cb0_crc_at_slot3 =
+  testCase "seeded C=2: CB0 CRC-24B at slot 3" $ do
+    let buf = toList (tbData (tpTbBuffer runSeededParser))
+    buf !! 3 @?= expectedCb0CrcSeeded
+
+test_seeded_c2_cb1_payload_slots :: TestTree
+test_seeded_c2_cb1_payload_slots =
+  testCase "seeded C=2: CB1 payload slots 4-6 intact" $ do
+    let buf = toList (tbData (tpTbBuffer runSeededParser))
+    buf !! 4 @?= 0xDEADBEEF
+    buf !! 5 @?= 0xDEADBEEF
+    buf !! 6 @?= 0xDEADBEEF
+
+test_seeded_c2_tb_crc_at_slot7 :: TestTree
+test_seeded_c2_tb_crc_at_slot7 =
+  testCase "seeded C=2: TB CRC-24A at slot 7" $ do
+    let buf = toList (tbData (tpTbBuffer runSeededParser))
+    buf !! 7 @?= expectedTbCrcSeeded
+
+test_seeded_c2_cb1_crc_at_slot8 :: TestTree
+test_seeded_c2_cb1_crc_at_slot8 =
+  testCase "seeded C=2: CB1 CRC-24B at slot 8 (includes TB CRC dword)" $ do
+    let buf = toList (tbData (tpTbBuffer runSeededParser))
+    buf !! 8 @?= expectedCb1CrcSeeded
 
 -- =============================================================================
 -- Test group
@@ -188,13 +231,16 @@ cbCrcInterleaveTests = testGroup "CB CRC interleaving"
       , test_c1_tbCrc_at_slot25
       , test_c1_tbLenDwords
       ]
-  , testGroup "C=2 BG2: TB buffer layout (476-byte TB)"
-      [ test_476_tbLenDwords
-      , test_476_cb0_payload_boundary
-      , test_476_cb0_crc
-      , test_476_cb1_payload_boundary
-      , test_476_cb1_crc
-      , test_476_tb_crc
-      , test_476_crc_slots_differ_from_payload
+  , testGroup "C=1: no interleaving (476-byte TB, Kcb fix)"
+      [ test_476_c1_tbLenDwords
+      , test_476_c1_payload_preserved
+      , test_476_c1_tbCrc_at_slot119
+      ]
+  , testGroup "Seeded C=2: last CB CRC covers TB CRC dword (Fix 2 regression)"
+      [ test_seeded_c2_tbLenDwords
+      , test_seeded_c2_cb0_crc_at_slot3
+      , test_seeded_c2_cb1_payload_slots
+      , test_seeded_c2_tb_crc_at_slot7
+      , test_seeded_c2_cb1_crc_at_slot8
       ]
   ]

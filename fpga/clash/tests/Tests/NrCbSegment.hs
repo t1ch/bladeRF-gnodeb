@@ -94,20 +94,19 @@ test_parseTxData_small = testCase "small TB: C=1, no CB CRC" $ do
   -- 25 payload dwords + 1 CRC-16 dword = 26
   tbLenDwords tb @?= 26
 
--- 476-byte TB: BG2, C=2, kDw=60.
+-- 476-byte TB: BG2, C=1 after Kcb threshold fix.
+-- 476 bytes = 119 payload dwords, tbTotDw = 120, Kcb_BG2 = 120.
+-- 120 > 120 is false → C = 1, kDw = 120.
 -- Expected TB buffer layout:
---   [0..59]   CB0 payload (60 dwords)
---   [60]      CB0 CRC-24B
---   [61..119] CB1 payload (59 dwords; 476 bytes = 119 total payload dwords)
---   [120]     CB1 CRC-24B
---   [121]     TB CRC-16 (476 < 479 bytes threshold)
---   tbLenDwords = 122
+--   [0..118]  payload (119 dwords)
+--   [119]     TB CRC-16
+--   tbLenDwords = 120
 test_parseTxData_cbCrcInTbBuf :: TestTree
-test_parseTxData_cbCrcInTbBuf = testCase "476-byte TB: CB CRC-24B interleaved in TB buffer" $ do
+test_parseTxData_cbCrcInTbBuf = testCase "476-byte TB: C=1 after Kcb threshold fix" $ do
   let st = runTxDataParser 476
       tb = tpTbBuffer st
-  tpCbNumCbs st  @?= 2
-  tbLenDwords tb @?= 122
+  tpCbNumCbs st  @?= 1
+  tbLenDwords tb @?= 120
 
 -- Large TB: C=2
 test_parseTxData_large :: TestTree

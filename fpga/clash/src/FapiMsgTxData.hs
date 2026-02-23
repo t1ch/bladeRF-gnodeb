@@ -218,23 +218,43 @@ parseTxDataDword st dw _bodyDwIdx =
              -- and finalize the last (or only) CB.
              let crcValue = finalizeNrCrc crc'
 
-                 -- For C > 1: insert last CB CRC-24B before TB CRC
+                 -- For C > 1: fold the TB CRC dword into the last CB CRC-24B
+                 -- accumulator before finalizing it.  Spec §5.2.2: sequence
+                 -- b = [TB payload | TB CRC]; the last CB's slice covers TB CRC.
+                 cbCrc'' = if tpCbNumCbs st > 1
+                             then updateNrCrc cbCrc' crcValue
+                             else cbCrc'
+                 lastCbCrcVal = finalizeNrCrc cbCrc''
+
+                 -- Buffer tail layout:
+                 --   C > 1: [TB CRC dword] [last CB CRC-24B]  (TB CRC is part of b)
+                 --   C = 1: handled below via bufWithCrc
                  (tbBufPreCrc, crcWIdx) =
                    if tpCbNumCbs st > 1
-                     then let p   = newWIdx
-                              buf = if p < maxTbBufDwords
-                                      then newBuf { tbData = replace p cbCrcVal (tbData newBuf) }
-                                      else newBuf
-                          in (buf, if p < maxTbBufDwords then p + 1 else p)
+                     then let p0  = newWIdx
+                              buf0 = if p0 < maxTbBufDwords
+                                       then newBuf { tbData = replace p0 crcValue (tbData newBuf) }
+                                       else newBuf
+                              p1  = if p0 < maxTbBufDwords then p0 + 1 else p0
+                              buf1 = if p1 < maxTbBufDwords
+                                       then buf0 { tbData = replace p1 lastCbCrcVal (tbData buf0) }
+                                       else buf0
+                              p2  = if p1 < maxTbBufDwords then p1 + 1 else p1
+                          in (buf1, p2)
                      else (newBuf, newWIdx)
 
-                 bufWithCrc  = if crcWIdx < maxTbBufDwords
-                                 then tbBufPreCrc { tbData = replace crcWIdx crcValue
-                                                              (tbData tbBufPreCrc) }
-                                 else tbBufPreCrc
-                 wIdxAfterCrc = if crcWIdx < maxTbBufDwords
-                                  then crcWIdx + 1
-                                  else crcWIdx
+                 -- C = 1: write TB CRC now; C > 1: already written above
+                 bufWithCrc  = if tpCbNumCbs st > 1
+                                 then tbBufPreCrc
+                                 else if crcWIdx < maxTbBufDwords
+                                        then tbBufPreCrc { tbData = replace crcWIdx crcValue
+                                                                     (tbData tbBufPreCrc) }
+                                        else tbBufPreCrc
+                 wIdxAfterCrc = if tpCbNumCbs st > 1
+                                  then crcWIdx
+                                  else if crcWIdx < maxTbBufDwords
+                                         then crcWIdx + 1
+                                         else crcWIdx
 
                  tdi       = tpInfo st
                  curTp     = tdPdus tdi !! pduNum

@@ -46,6 +46,7 @@ module GNodeBFAPITypes
   , maxPdschPerSlot, maxPdcchPerSlot, maxSsbPerSlot, maxCsiRsPerSlot
   , maxTbDwords, maxTbBufDwords, maxCdcWords
   , bg1BcbDwords, bg2BcbDwords
+  , bg1KcbDwords, bg2KcbDwords
   ) where
 
 import Clash.Prelude
@@ -326,14 +327,25 @@ nullNrCrcState = NrCrcState
 
 data CbBaseGraph = BG1 | BG2 deriving (Show, Eq, Generic, NFDataX)
 
--- | CB payload capacity in dwords, without CB CRC overhead.
---   BG1: floor(8424 / 32) = 263
---   BG2: floor(3816 / 32) = 119
+-- | CB payload capacity in dwords, = (Kcb − L) / 32.  Used as the
+--   denominator in the C computation (spec §5.2.2).  NOT the segmentation
+--   threshold — see bg1KcbDwords / bg2KcbDwords for that.
+--   BG1: floor((8448 − 24) / 32) = floor(8424 / 32) = 263
+--   BG2: floor((3840 − 16) / 32) = floor(3816 / 32) = 119
 bg1BcbDwords :: Unsigned 16
 bg1BcbDwords = 263
 
 bg2BcbDwords :: Unsigned 16
 bg2BcbDwords = 119
+
+-- | Kcb in dwords — threshold for the segmentation decision (spec §5.2.2).
+--   Segmentation occurs only when tbTotDw > Kcb_dw (strictly greater).
+--   BG1: 8448 / 32 = 264.  BG2: 3840 / 32 = 120.
+bg1KcbDwords :: Unsigned 16
+bg1KcbDwords = 264
+
+bg2KcbDwords :: Unsigned 16
+bg2KcbDwords = 120
 
 
 -- =============================================================================
