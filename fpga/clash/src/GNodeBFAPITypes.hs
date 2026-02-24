@@ -400,12 +400,16 @@ data TxDataParseState = TxDataParseState
   -- CRC accumulator for inline TB integrity checking
   , tpCrcState     :: NrCrcState    -- ^ Inline TB CRC accumulator
   -- CBS (computed in BP_TLV_HEADER, consumed in BP_TLV_DATA)
-  , tpCbNumCbs     :: Unsigned 8    -- ^ C: total number of code blocks
-  , tpCbPayDw      :: Unsigned 16   -- ^ kDw: payload dwords per CB (boundary dword detection)
-  , tpCbPayBits    :: Unsigned 16   -- ^ kBits: per-CB segment bits from b
-  , tpCbSplitBit   :: Unsigned 6    -- ^ kBits mod 32 (0 = no intra-dword split)
-  , tpCbDwInBlock  :: Unsigned 16   -- ^ Dwords written to current CB so far
-  , tpCbCrcState   :: NrCrcState    -- ^ CRC-24B accumulator for current CB
+  , tpCbNumCbs      :: Unsigned 8    -- ^ C: total number of code blocks
+  , tpCbPayDw       :: Unsigned 16   -- ^ kDwCb1: CB 1..C-1 boundary in dwords (Z_c-aligned K)
+  , tpCbPayBits     :: Unsigned 16   -- ^ K: Z_c-aligned LDPC block size in bits
+  , tpCbSplitBit    :: Unsigned 6    -- ^ K mod 32 (splitCb1; 0 = no intra-dword split)
+  , tpCbPayDwCb0    :: Unsigned 16   -- ^ kDwCb0: CB 0 boundary in dwords (ceil((K-F)/32))
+  , tpCbSplitBitCb0 :: Unsigned 6    -- ^ (K-F) mod 32 (splitCb0)
+  , tpCbFillerBits  :: Unsigned 16   -- ^ F = K*C - B' filler bits in CB 0
+  , tpCbIsFirst     :: Bool          -- ^ True until CB 0 boundary crossed
+  , tpCbDwInBlock   :: Unsigned 16   -- ^ Dwords written to current CB so far
+  , tpCbCrcState    :: NrCrcState    -- ^ CRC-24B accumulator for current CB
   } deriving (Show, Eq, Generic, NFDataX)
 
 nullTxDataParseState :: TxDataParseState
@@ -422,12 +426,16 @@ nullTxDataParseState = TxDataParseState
   , tpTbBuffer     = nullTbBuffer
   , tpTbWriteIdx   = 0
   , tpCrcState     = nullNrCrcState
-  , tpCbNumCbs     = 1
-  , tpCbPayDw      = 0
-  , tpCbPayBits    = 0
-  , tpCbSplitBit   = 0
-  , tpCbDwInBlock  = 0
-  , tpCbCrcState   = nullNrCrcState
+  , tpCbNumCbs      = 1
+  , tpCbPayDw       = 0
+  , tpCbPayBits     = 0
+  , tpCbSplitBit    = 0
+  , tpCbPayDwCb0    = 0
+  , tpCbSplitBitCb0 = 0
+  , tpCbFillerBits  = 0
+  , tpCbIsFirst     = True
+  , tpCbDwInBlock   = 0
+  , tpCbCrcState    = nullNrCrcState
   }
 
 -- =============================================================================

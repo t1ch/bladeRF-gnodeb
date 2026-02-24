@@ -146,24 +146,29 @@ parseTxDataDword st dw _bodyDwIdx =
           crc'    = (tpCrcState st) { ncCrcType = crcType }
 
           -- Compute CBS parameters combinationally from TB size
-          (_, cbC, cbKDw, cbKBits, cbSplit) = computeCbParams tbLenBytes
+          (_, cbC, cbKDwCb0, cbSplitCb0, cbKDwCb1, cbSplitCb1, cbKBits, cbFiller) =
+              computeCbParams tbLenBytes
           cbCrcInit = nullNrCrcState { ncCrcType = NR_CRC24B }
 
-      in st { tpInfo        = tdi { tdPdus = newPdus }
-            , tpTlvLenDw    = clampedLen
-            , tpTlvDwRead   = 0
-            , tpPduRemainDw = tpPduRemainDw st - 1
-            , tpCrcState    = crc'
-            , tpPhase       = if clampedLen == 0
-                                then BP_PDU_HEADER
-                                else BP_TLV_DATA
+      in st { tpInfo         = tdi { tdPdus = newPdus }
+            , tpTlvLenDw     = clampedLen
+            , tpTlvDwRead    = 0
+            , tpPduRemainDw  = tpPduRemainDw st - 1
+            , tpCrcState     = crc'
+            , tpPhase        = if clampedLen == 0
+                                 then BP_PDU_HEADER
+                                 else BP_TLV_DATA
             -- CBS
-            , tpCbNumCbs    = cbC
-            , tpCbPayDw     = cbKDw
-            , tpCbPayBits   = cbKBits
-            , tpCbSplitBit  = cbSplit
-            , tpCbDwInBlock = 0
-            , tpCbCrcState  = cbCrcInit
+            , tpCbNumCbs     = cbC
+            , tpCbPayDw      = cbKDwCb1
+            , tpCbPayBits    = cbKBits
+            , tpCbSplitBit   = cbSplitCb1
+            , tpCbPayDwCb0   = cbKDwCb0
+            , tpCbSplitBitCb0 = cbSplitCb0
+            , tpCbFillerBits = cbFiller
+            , tpCbIsFirst    = True
+            , tpCbDwInBlock  = 0
+            , tpCbCrcState   = cbCrcInit
             }
 
     -- TLV value: capture TB payload dwords and feed through CRC engines.
@@ -200,10 +205,13 @@ parseTxDataDword st dw _bodyDwIdx =
 
           cbDwPos  = tpCbDwInBlock st
           cbDwNext = cbDwPos + 1
-          cbSplit  = tpCbSplitBit st
+
+          -- Select boundary parameters based on whether CB 0 has been completed
+          curPayDw = if tpCbIsFirst st then tpCbPayDwCb0 st else tpCbPayDw st
+          cbSplit  = if tpCbIsFirst st then tpCbSplitBitCb0 st else tpCbSplitBit st
 
           -- CB boundary detection
-          cbBoundaryDw = cbDwNext >= tpCbPayDw st && tpCbNumCbs st > 1
+          cbBoundaryDw = cbDwNext >= curPayDw && tpCbNumCbs st > 1
           cbNeedsSplit = cbBoundaryDw && cbSplit > 0
 
           -- CB CRC-24B update: depends on whether this is a split dword
@@ -331,6 +339,7 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpCrcState    = crc'
                           , tpCbDwInBlock = 0
                           , tpCbCrcState  = cbCrcNext
+                          , tpCbIsFirst   = False
                           }
                   else
                     -- Normal dword: continue building current CB.

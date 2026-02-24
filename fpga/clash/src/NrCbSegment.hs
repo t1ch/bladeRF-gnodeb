@@ -6,7 +6,7 @@
 --   from the transport block size.  Called once in the BP_TLV_HEADER
 --   state of FapiMsgTxData — no pipeline state required.
 --
---   Algorithm (bit-level accuracy):
+--   Algorithm (Z_c-aligned, bit-level accuracy):
 --
 --     B_bits  = tbLenBytes * 8
 --     BG      = BG1 if B_bits > 3824 else BG2
@@ -15,9 +15,13 @@
 --     K_cb    = BG1 → 8448           BG2 → 3840           [bits]
 --     L_cb    = 24                                          [CRC-24B bits]
 --     C       = ceil(B' / (K_cb - L_cb))  if B' > K_cb, else 1
---     kBits   = ceil(B' / C)              [per-CB segment bits from b]
---     kDw     = ceil(kBits / 32)          [boundary dword detection]
---     splitBit = kBits mod 32             [0 = boundary at dword edge]
+--     kTarget = ceil(B' / C)              [min LDPC block size needed]
+--     Z_c     = min valid lifting size s.t. mult*Z_c >= kTarget  (Table 5.3.2-1)
+--     K       = mult * Z_c             [LDPC block size, Z_c-aligned]
+--     F       = K * C - B'            [filler bits in CB 0]
+--     K-F     = K - F                 [payload bits for CB 0]
+--     kDwCb0  = ceil((K-F) / 32)     [CB 0 boundary in dwords]
+--     kDwCb1  = ceil(K / 32)         [CB 1..C-1 boundary in dwords]
 
 module NrCbSegment
   ( computeCbParams
@@ -26,10 +30,39 @@ module NrCbSegment
 import Clash.Prelude
 import GNodeBFAPITypes (CbBaseGraph(..))
 
+-- | Valid lifting-size values from 3GPP TS 38.212 Table 5.3.2-1, ascending.
+validZcValues :: Vec 51 (Unsigned 10)
+validZcValues
+  = 2 :> 3 :> 4 :> 5 :> 6 :> 7 :> 8 :> 9 :> 10 :> 11
+  :> 12 :> 13 :> 14 :> 15 :> 16 :> 18 :> 20 :> 22 :> 24 :> 26
+  :> 28 :> 30 :> 32 :> 36 :> 40 :> 44 :> 48 :> 52 :> 56 :> 60
+  :> 64 :> 72 :> 80 :> 88 :> 96 :> 104 :> 112 :> 120 :> 128 :> 144
+  :> 160 :> 176 :> 192 :> 208 :> 224 :> 240 :> 256 :> 288 :> 320 :> 352
+  :> 384 :> Nil
+
+-- | Find the minimum valid Z_c such that mult*Z_c >= kTarget.
+--   Synthesises to a 51-stage combinational MUX chain.
+lookupZc :: CbBaseGraph -> Unsigned 32 -> Unsigned 10
+lookupZc bg kTarget =
+  let mult = if bg == BG1 then 22 else 10 :: Unsigned 32
+      step acc zc = if resize zc * mult >= kTarget && zc < acc
+                      then zc
+                      else acc
+  in foldl step 384 validZcValues
+
 -- | Compute CBS parameters from TB size in bytes.
 --   Called once in BP_TLV_HEADER.  Pure combinational.
---   Returns (baseGraph, C, kDw, kBits, splitBit).
-computeCbParams :: BitVector 32 -> (CbBaseGraph, Unsigned 8, Unsigned 16, Unsigned 16, Unsigned 6)
+--   Returns (baseGraph, C, kDwCb0, splitCb0, kDwCb1, splitCb1, kBits, fillerBits).
+computeCbParams :: BitVector 32
+  -> ( CbBaseGraph  -- bg
+     , Unsigned 8   -- C (number of code blocks)
+     , Unsigned 16  -- kDwCb0   = ceil((K-F)/32)  — CB 0 boundary in dwords
+     , Unsigned 6   -- splitCb0 = (K-F) mod 32
+     , Unsigned 16  -- kDwCb1   = ceil(K/32)       — CB 1..C-1 boundary in dwords
+     , Unsigned 6   -- splitCb1 = K mod 32
+     , Unsigned 16  -- kBits    = K (Z_c-aligned LDPC block size)
+     , Unsigned 16  -- fillerBits = F = K*C - B'
+     )
 computeCbParams tbLenBytes =
   let tbBytes  = unpack tbLenBytes :: Unsigned 32
       bBits    = tbBytes `shiftL` 3
@@ -46,15 +79,29 @@ computeCbParams tbLenBytes =
                    else 1 :: Unsigned 32
       c        = truncateB c32 :: Unsigned 8
 
-      -- Per-CB segment of b: kBits = ceil(B'/C)
-      -- (data bits from b assigned to each CB, before per-CB CRC)
-      kBits32  = (bPrime + c32 - 1) `div` c32 :: Unsigned 32
-      kBits    = truncateB kBits32 :: Unsigned 16
+      -- kTarget = ceil(B'/C): minimum per-CB LDPC block size needed
+      kTarget  = (bPrime + c32 - 1) `div` c32 :: Unsigned 32
 
-      -- Dword count per CB segment (for boundary detection)
-      kDw      = truncateB ((kBits32 + 31) `shiftR` 5) :: Unsigned 16
+      -- Z_c: smallest valid lifting size satisfying mult*Z_c >= kTarget
+      zc       = lookupZc bg kTarget
+      mult     = if bg == BG1 then 22 else 10 :: Unsigned 32
 
-      -- Intra-dword split offset: 0 means boundary at dword edge (no split)
-      splitBit = truncateB (kBits32 .&. 31) :: Unsigned 6
+      -- K: Z_c-aligned LDPC block size
+      kFull    = resize zc * mult :: Unsigned 32
 
-  in (bg, c, kDw, kBits, splitBit)
+      -- F: filler bits in CB 0 (F = K*C - B')
+      filler   = kFull * c32 - bPrime :: Unsigned 32
+
+      -- K-F: actual payload bits drawn from b for CB 0
+      kData    = kFull - filler :: Unsigned 32
+
+      ceil32 x = (x + 31) `shiftR` 5
+
+      kDwCb0   = truncateB (ceil32 kData) :: Unsigned 16
+      splitCb0 = truncateB (kData .&. 31) :: Unsigned 6
+      kDwCb1   = truncateB (ceil32 kFull) :: Unsigned 16
+      splitCb1 = truncateB (kFull .&. 31) :: Unsigned 6
+      kBits    = truncateB kFull          :: Unsigned 16
+      fillerB  = truncateB filler         :: Unsigned 16
+
+  in (bg, c, kDwCb0, splitCb0, kDwCb1, splitCb1, kBits, fillerB)

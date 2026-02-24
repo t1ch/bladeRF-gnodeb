@@ -163,18 +163,22 @@ test_476_c1_tbCrc_at_slot119 =
 
 seedState :: TxDataParseState
 seedState = nullTxDataParseState
-  { tpPhase        = BP_TLV_DATA
-  , tpTlvLenDw     = 6
-  , tpTlvDwRead    = 0
-  , tpCbNumCbs     = 2
-  , tpCbPayDw      = 3
-  , tpCbPayBits    = 96     -- 3 × 32 (dword-aligned)
-  , tpCbSplitBit   = 0      -- no intra-dword split
-  , tpCbDwInBlock  = 0
-  , tpCrcState     = nullNrCrcState { ncCrcType = NR_CRC24A }
-  , tpCbCrcState   = nullNrCrcState { ncCrcType = NR_CRC24B }
-  , tpInfo         = nullTxDataInfo { tdNumPdus = 1 }
-  , tpPduRemainDw  = 6
+  { tpPhase         = BP_TLV_DATA
+  , tpTlvLenDw      = 6
+  , tpTlvDwRead     = 0
+  , tpCbNumCbs      = 2
+  , tpCbPayDw       = 3
+  , tpCbPayBits     = 96     -- 3 × 32 (dword-aligned, treated as K)
+  , tpCbSplitBit    = 0      -- no intra-dword split (splitCb1)
+  , tpCbPayDwCb0    = 3      -- symmetric test: CB0 boundary same as CB1
+  , tpCbSplitBitCb0 = 0
+  , tpCbFillerBits  = 0
+  , tpCbIsFirst     = True
+  , tpCbDwInBlock   = 0
+  , tpCrcState      = nullNrCrcState { ncCrcType = NR_CRC24A }
+  , tpCbCrcState    = nullNrCrcState { ncCrcType = NR_CRC24B }
+  , tpInfo          = nullTxDataInfo { tdNumPdus = 1 }
+  , tpPduRemainDw   = 6
   }
 
 runSeededParser :: TxDataParseState

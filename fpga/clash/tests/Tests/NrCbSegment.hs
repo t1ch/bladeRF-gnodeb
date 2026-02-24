@@ -19,65 +19,81 @@ import FapiMsgTxData (parseTxDataDword)
 -- =============================================================================
 
 -- Small TB (100 bytes): BG2, C=1
--- B=800, B'=816, kBits=816, kDw=ceil(816/32)=26
+-- B=800, B'=816, kTarget=816, Z_c=88 (88×10=880≥816), K=880, F=64
+-- K-F=816, kDwCb0=ceil(816/32)=26, splitCb0=16
+-- kDwCb1=ceil(880/32)=28, splitCb1=16
 test_cbParams_small :: TestTree
-test_cbParams_small = testCase "computeCbParams 100 → (BG2,1,26,816,16)" $ do
-  let (bg, c, kDw, kBits, split) = computeCbParams 100
-  bg    @?= BG2
-  c     @?= 1
-  kDw   @?= 26
-  kBits @?= 816
-  split @?= 16
+test_cbParams_small = testCase "computeCbParams 100 → (BG2,1,26,16,28,16,880,64)" $ do
+  let (bg, c, kDwCb0, splitCb0, kDwCb1, splitCb1, kBits, filler) = computeCbParams 100
+  bg       @?= BG2
+  c        @?= 1
+  kDwCb0   @?= 26
+  splitCb0 @?= 16
+  kDwCb1   @?= 28
+  splitCb1 @?= 16
+  kBits    @?= 880
+  filler   @?= 64
 
 -- Large TB (1100 bytes): BG1, C=2
--- B=8800, B'=8824, C=ceil(8824/8424)=2, kBits=ceil(8824/2)=4412
--- kDw=ceil(4412/32)=138, split=4412 mod 32 = 28
+-- B=8800, B'=8824, kTarget=ceil(8824/2)=4412
+-- Z_c=208 (208×22=4576≥4412), K=4576, F=4576×2-8824=328
+-- K-F=4248, kDwCb0=ceil(4248/32)=133, splitCb0=24
+-- kDwCb1=ceil(4576/32)=143, splitCb1=0
 test_cbParams_large :: TestTree
-test_cbParams_large = testCase "computeCbParams 1100 → (BG1,2,138,4412,28)" $ do
-  let (bg, c, kDw, kBits, split) = computeCbParams 1100
-  bg    @?= BG1
-  c     @?= 2
-  kDw   @?= 138
-  kBits @?= 4412
-  split @?= 28
+test_cbParams_large = testCase "computeCbParams 1100 → (BG1,2,133,24,143,0,4576,328)" $ do
+  let (bg, c, kDwCb0, splitCb0, kDwCb1, splitCb1, kBits, filler) = computeCbParams 1100
+  bg       @?= BG1
+  c        @?= 2
+  kDwCb0   @?= 133
+  splitCb0 @?= 24
+  kDwCb1   @?= 143
+  splitCb1 @?= 0
+  kBits    @?= 4576
+  filler   @?= 328
 
 -- Boundary: exactly 478 bytes → CRC-16 / BG2
 test_cbParams_boundary478 :: TestTree
 test_cbParams_boundary478 = testCase "computeCbParams 478 → BG2" $ do
-  let (bg, _, _, _, _) = computeCbParams 478
+  let (bg, _, _, _, _, _, _, _) = computeCbParams 478
   bg @?= BG2
 
 -- Boundary: 479 bytes → CRC-24A / BG1
 test_cbParams_boundary479 :: TestTree
 test_cbParams_boundary479 = testCase "computeCbParams 479 → BG1" $ do
-  let (bg, _, _, _, _) = computeCbParams 479
+  let (bg, _, _, _, _, _, _, _) = computeCbParams 479
   bg @?= BG1
 
 -- TB = 2103 bytes: was C=3 (bug), now C=2 (correct)
 -- B=16824, B'=16848, K_cb=8448, denom=8424
 -- C=ceil(16848/8424)=2
 test_cbParams_2103 :: TestTree
-test_cbParams_2103 = testCase "computeCbParams 2103 → (BG1,2,_,_,_)" $ do
-  let (bg, c, _, _, _) = computeCbParams 2103
+test_cbParams_2103 = testCase "computeCbParams 2103 → (BG1,2,_,_,_,_,_,_)" $ do
+  let (bg, c, _, _, _, _, _, _) = computeCbParams 2103
   bg @?= BG1
   c  @?= 2
 
 -- TB = 2102 bytes: same boundary fix
 -- B=16816, B'=16840, C=ceil(16840/8424)=2
 test_cbParams_2102 :: TestTree
-test_cbParams_2102 = testCase "computeCbParams 2102 → (BG1,2,_,_,_)" $ do
-  let (bg, c, _, _, _) = computeCbParams 2102
+test_cbParams_2102 = testCase "computeCbParams 2102 → (BG1,2,_,_,_,_,_,_)" $ do
+  let (bg, c, _, _, _, _, _, _) = computeCbParams 2102
   bg @?= BG1
   c  @?= 2
 
--- Verify kBits and splitBit for a known case
--- TB = 2100 bytes: B=16800, B'=16824, C=2, kBits=ceil(16824/2)=8412
--- 8412 mod 32 = 28 (262×32=8384, 8412-8384=28)
+-- Verify K and filler for 2100-byte TB:
+-- B=16800, B'=16824, C=2, kTarget=8412
+-- Z_c=384 (384×22=8448≥8412), K=8448, F=8448×2-16824=72
+-- K-F=8376, kDwCb0=ceil(8376/32)=262, splitCb0=24
+-- kDwCb1=ceil(8448/32)=264, splitCb1=0
 test_cbParams_kBits :: TestTree
-test_cbParams_kBits = testCase "computeCbParams 2100: kBits=8412, split=28" $ do
-  let (_, _, _, kBits, split) = computeCbParams 2100
-  kBits @?= 8412
-  split @?= 28
+test_cbParams_kBits = testCase "computeCbParams 2100: K=8448, F=72, kDwCb0=262, splitCb0=24, kDwCb1=264, splitCb1=0" $ do
+  let (_, _, kDwCb0, splitCb0, kDwCb1, splitCb1, kBits, filler) = computeCbParams 2100
+  kBits    @?= 8448
+  filler   @?= 72
+  kDwCb0   @?= 262
+  splitCb0 @?= 24
+  kDwCb1   @?= 264
+  splitCb1 @?= 0
 
 -- =============================================================================
 -- parseTxDataDword integration tests
