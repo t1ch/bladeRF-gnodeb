@@ -79,6 +79,7 @@ data TxOutput = TxOutput
   , txoTbReady      :: Bit
   , txoTbLenDwords  :: Unsigned 16
   , txoTbPduIndex   :: BitVector 16
+  , txoTbBaseGraph  :: CbBaseGraph  -- ^ BG1 or BG2 for the LDPC encoder
   } deriving (Show, Eq, Generic, NFDataX)
 
 -- =============================================================================
@@ -385,5 +386,6 @@ txMealy current (tx_packet_empty, tx_packet_control, fifoFull) =
       , txoTbReady      = tbReady tbBuf
       , txoTbLenDwords  = tbLenDwords tbBuf
       , txoTbPduIndex   = tbPduIndex tbBuf
+      , txoTbBaseGraph  = tpCbBaseGraph (txTxDataPs current)
       }
   in (future, output)

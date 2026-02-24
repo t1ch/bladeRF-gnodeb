@@ -146,8 +146,13 @@ parseTxDataDword st dw _bodyDwIdx =
           crc'    = (tpCrcState st) { ncCrcType = crcType }
 
           -- Compute CBS parameters combinationally from TB size
-          (_, cbC, cbKDwCb0, cbSplitCb0, cbKDwCb1, cbSplitCb1, cbKBits, cbFiller) =
+          (cbBg, cbC, cbKDwCb0, cbSplitCb0, cbKDwCb1, cbSplitCb1, cbKBits, cbFiller) =
               computeCbParams tbLenBytes
+          -- CRC-24B is initialized to 0.  Per §5.2.2, the F filler bits
+          -- prepended to CB 0 are zero-valued.  Feeding N zero bits into a
+          -- zero-initialized CRC register is a no-op (no MSB feedback when
+          -- register = 0 and input = 0), so omitting the filler bits from
+          -- the accumulation produces the same result as including them. ✓
           cbCrcInit = nullNrCrcState { ncCrcType = NR_CRC24B }
 
       in st { tpInfo         = tdi { tdPdus = newPdus }
@@ -166,6 +171,7 @@ parseTxDataDword st dw _bodyDwIdx =
             , tpCbPayDwCb0   = cbKDwCb0
             , tpCbSplitBitCb0 = cbSplitCb0
             , tpCbFillerBits = cbFiller
+            , tpCbBaseGraph  = cbBg
             , tpCbIsFirst    = True
             , tpCbDwInBlock  = 0
             , tpCbCrcState   = cbCrcInit
@@ -316,8 +322,12 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpInfo        = tdi { tdPdus = newPdus }
                           , tpCurPdu      = nextPdu
                           , tpPhase       = BP_PDU_HEADER
-                          , tpCbDwInBlock = cbDwNext
-                          , tpCbCrcState  = cbCrc'
+                          -- Reset CB tracking so stale state from this PDU
+                          -- cannot leak into the next PDU's BP_TLV_DATA.
+                          -- BP_TLV_HEADER will reinitialise these properly.
+                          , tpCbDwInBlock = 0
+                          , tpCbIsFirst   = True
+                          , tpCbCrcState  = nullNrCrcState { ncCrcType = NR_CRC24B }
                           }
 
            else if cbBoundaryDw

@@ -407,6 +407,7 @@ data TxDataParseState = TxDataParseState
   , tpCbPayDwCb0    :: Unsigned 16   -- ^ kDwCb0: CB 0 boundary in dwords (ceil((K-F)/32))
   , tpCbSplitBitCb0 :: Unsigned 6    -- ^ (K-F) mod 32 (splitCb0)
   , tpCbFillerBits  :: Unsigned 16   -- ^ F = K*C - B' filler bits in CB 0
+  , tpCbBaseGraph   :: CbBaseGraph   -- ^ BG1 or BG2; needed by LDPC encoder
   , tpCbIsFirst     :: Bool          -- ^ True until CB 0 boundary crossed
   , tpCbDwInBlock   :: Unsigned 16   -- ^ Dwords written to current CB so far
   , tpCbCrcState    :: NrCrcState    -- ^ CRC-24B accumulator for current CB
@@ -433,6 +434,7 @@ nullTxDataParseState = TxDataParseState
   , tpCbPayDwCb0    = 0
   , tpCbSplitBitCb0 = 0
   , tpCbFillerBits  = 0
+  , tpCbBaseGraph   = BG2
   , tpCbIsFirst     = True
   , tpCbDwInBlock   = 0
   , tpCbCrcState    = nullNrCrcState
