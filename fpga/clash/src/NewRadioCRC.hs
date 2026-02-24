@@ -40,6 +40,13 @@ module NewRadioCRC
     nrCrc24AStep
   , nrCrc24BStep
   , nrCrc16Step
+    -- * Fixed-width CRC-24B steps (for TB CRC → last CB feeding)
+  , nrCrc24BStep24
+  , nrCrc24BStep16
+    -- * Range-gated CRC-24B step (for CB boundary splits)
+  , rangeCrc24BStep
+    -- * Feed raw TB CRC register into CB CRC-24B
+  , updateCbCrcWithTbCrc
     -- * NR CRC polynomials (without leading 1)
   , polyCrc24A
   , polyCrc24B
@@ -52,7 +59,7 @@ module NewRadioCRC
   ) where
 
 import Clash.Prelude
-import StreamingCRC   (parallelCRCStep)
+import StreamingCRC   (parallelCRCStep, rangeParallelCRCStep)
 import GNodeBFAPITypes (NrCrcType(..), NrCrcState(..))
 
 -- =============================================================================
@@ -96,6 +103,45 @@ nrCrc24BStep dw crc = parallelCRCStep polyCrc24B crc dw
 -- | CRC-16 one-dword parallel step.
 nrCrc16Step :: BitVector 32 -> BitVector 16 -> BitVector 16
 nrCrc16Step dw crc = parallelCRCStep polyCrc16 crc dw
+
+-- =============================================================================
+-- Fixed-Width CRC-24B Steps (for TB CRC → Last CB Feeding)
+-- =============================================================================
+--
+-- These feed the raw TB CRC register (24 or 16 bits) directly into a
+-- CRC-24B accumulator — no zero-padding, no finalizeNrCrc roundtrip.
+
+-- | CRC-24B step over a 24-bit input (for CRC-24A register feeding).
+nrCrc24BStep24 :: BitVector 24 -> BitVector 24 -> BitVector 24
+nrCrc24BStep24 dw24 crc = parallelCRCStep polyCrc24B crc dw24
+
+-- | CRC-24B step over a 16-bit input (for CRC-16 register feeding).
+nrCrc24BStep16 :: BitVector 16 -> BitVector 24 -> BitVector 24
+nrCrc24BStep16 dw16 crc = parallelCRCStep polyCrc24B crc dw16
+
+-- =============================================================================
+-- Range-Gated CRC-24B Step (for CB Boundary Splits)
+-- =============================================================================
+
+-- | CRC-24B update over an arbitrary bit range within a 32-bit dword.
+--   Used when a CB boundary falls mid-dword.
+rangeCrc24BStep :: BitVector 24 -> Unsigned 6 -> Unsigned 6 -> BitVector 32 -> BitVector 24
+rangeCrc24BStep crc startBit endBit dw =
+  rangeParallelCRCStep polyCrc24B crc startBit endBit dw
+
+-- =============================================================================
+-- Feed Raw TB CRC Register into CB CRC-24B
+-- =============================================================================
+
+-- | Feed the raw TB CRC register into a CB CRC-24B accumulator.
+--   Feeds exactly the meaningful CRC bits (24 for CRC-24A, 16 for CRC-16)
+--   through a fixed-width parallelCRCStep — no zero-padding.
+updateCbCrcWithTbCrc :: NrCrcState -> NrCrcState -> NrCrcState
+updateCbCrcWithTbCrc tbSt cbSt =
+  case ncCrcType tbSt of
+    NR_CRC24A -> cbSt { ncCrc24BReg = nrCrc24BStep24 (ncCrc24AReg tbSt) (ncCrc24BReg cbSt) }
+    NR_CRC16  -> cbSt { ncCrc24BReg = nrCrc24BStep16 (ncCrc16Reg  tbSt) (ncCrc24BReg cbSt) }
+    _         -> cbSt
 
 -- =============================================================================
 -- State-based API

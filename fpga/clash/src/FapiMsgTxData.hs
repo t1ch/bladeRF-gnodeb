@@ -36,7 +36,8 @@ module FapiMsgTxData
 
 import Clash.Prelude
 import GNodeBFAPITypes
-import NewRadioCRC (resetNrCrc, selectCrcType, updateNrCrc, finalizeNrCrc)
+import NewRadioCRC (resetNrCrc, selectCrcType, updateNrCrc, finalizeNrCrc,
+                    rangeCrc24BStep, updateCbCrcWithTbCrc)
 import NrCbSegment (computeCbParams)
 
 -- =============================================================================
@@ -145,7 +146,7 @@ parseTxDataDword st dw _bodyDwIdx =
           crc'    = (tpCrcState st) { ncCrcType = crcType }
 
           -- Compute CBS parameters combinationally from TB size
-          (_, cbC, cbKDw) = computeCbParams tbLenBytes
+          (_, cbC, cbKDw, cbKBits, cbSplit) = computeCbParams tbLenBytes
           cbCrcInit = nullNrCrcState { ncCrcType = NR_CRC24B }
 
       in st { tpInfo        = tdi { tdPdus = newPdus }
@@ -159,6 +160,8 @@ parseTxDataDword st dw _bodyDwIdx =
             -- CBS
             , tpCbNumCbs    = cbC
             , tpCbPayDw     = cbKDw
+            , tpCbPayBits   = cbKBits
+            , tpCbSplitBit  = cbSplit
             , tpCbDwInBlock = 0
             , tpCbCrcState  = cbCrcInit
             }
@@ -197,14 +200,29 @@ parseTxDataDword st dw _bodyDwIdx =
 
           cbDwPos  = tpCbDwInBlock st
           cbDwNext = cbDwPos + 1
+          cbSplit  = tpCbSplitBit st
 
-          -- CB CRC-24B update (only when there are multiple CBs)
-          cbCrc' = if isInline && tpCbNumCbs st > 1
-                     then updateNrCrc (tpCbCrcState st) dw
-                     else tpCbCrcState st
+          -- CB boundary detection
+          cbBoundaryDw = cbDwNext >= tpCbPayDw st && tpCbNumCbs st > 1
+          cbNeedsSplit = cbBoundaryDw && cbSplit > 0
 
-          -- Intermediate CB boundary: CB is full (C > 1, not last dword)
-          cbBoundary = cbDwNext >= tpCbPayDw st && tpCbNumCbs st > 1
+          -- CB CRC-24B update: depends on whether this is a split dword
+          cbCrc' = if not isInline || tpCbNumCbs st <= 1
+                     then tpCbCrcState st
+                     else if cbNeedsSplit
+                       -- Split: only process first `splitBit` bits for current CB
+                       then (tpCbCrcState st)
+                              { ncCrc24BReg = rangeCrc24BStep
+                                  (ncCrc24BReg (tpCbCrcState st)) 0 (resize cbSplit) dw }
+                       else updateNrCrc (tpCbCrcState st) dw   -- full 32-bit step
+
+          -- For split dwords: start next CB with remaining bits
+          cbCrcNext = if cbNeedsSplit
+                        then nullNrCrcState
+                               { ncCrcType   = NR_CRC24B
+                               , ncCrc24BReg = rangeCrc24BStep
+                                   0 (resize cbSplit) 32 dw }
+                        else freshCbCrc   -- dword-aligned boundary: fresh start
 
           -- Finalized CRC-24B value (used for both intermediate and last CB)
           cbCrcVal = finalizeNrCrc cbCrc'
@@ -218,11 +236,11 @@ parseTxDataDword st dw _bodyDwIdx =
              -- and finalize the last (or only) CB.
              let crcValue = finalizeNrCrc crc'
 
-                 -- For C > 1: fold the TB CRC dword into the last CB CRC-24B
-                 -- accumulator before finalizing it.  Spec §5.2.2: sequence
+                 -- For C > 1: feed the raw TB CRC register (exact width)
+                 -- into the last CB CRC-24B accumulator.  Spec §5.2.2:
                  -- b = [TB payload | TB CRC]; the last CB's slice covers TB CRC.
                  cbCrc'' = if tpCbNumCbs st > 1
-                             then updateNrCrc cbCrc' crcValue
+                             then updateCbCrcWithTbCrc crc' cbCrc'
                              else cbCrc'
                  lastCbCrcVal = finalizeNrCrc cbCrc''
 
@@ -294,10 +312,11 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpCbCrcState  = cbCrc'
                           }
 
-           else if cbBoundary
+           else if cbBoundaryDw
                   then
                     -- Intermediate CB complete: write CB CRC-24B into TB buffer,
-                    -- mark it ready, reset for next CB.
+                    -- reset for next CB (using cbCrcNext which may contain
+                    -- remaining split-dword bits).
                     let cbCrcWIdx      = newWIdx
                         tbBufWithCbCrc = if cbCrcWIdx < maxTbBufDwords
                                            then newBuf { tbData = replace cbCrcWIdx cbCrcVal (tbData newBuf) }
@@ -311,7 +330,7 @@ parseTxDataDword st dw _bodyDwIdx =
                           , tpPduRemainDw = pduRemain
                           , tpCrcState    = crc'
                           , tpCbDwInBlock = 0
-                          , tpCbCrcState  = freshCbCrc
+                          , tpCbCrcState  = cbCrcNext
                           }
                   else
                     -- Normal dword: continue building current CB.

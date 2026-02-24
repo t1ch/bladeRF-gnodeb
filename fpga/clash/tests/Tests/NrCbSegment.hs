@@ -18,33 +18,66 @@ import FapiMsgTxData (parseTxDataDword)
 -- computeCbParams tests
 -- =============================================================================
 
--- Small TB (100 bytes): BG2, C=1, kDw=26
+-- Small TB (100 bytes): BG2, C=1
+-- B=800, B'=816, kBits=816, kDw=ceil(816/32)=26
 test_cbParams_small :: TestTree
-test_cbParams_small = testCase "computeCbParams 100 → (BG2,1,26)" $ do
-  let (bg, c, kDw) = computeCbParams 100
-  bg   @?= BG2
-  c    @?= 1
-  kDw  @?= 26
+test_cbParams_small = testCase "computeCbParams 100 → (BG2,1,26,816,16)" $ do
+  let (bg, c, kDw, kBits, split) = computeCbParams 100
+  bg    @?= BG2
+  c     @?= 1
+  kDw   @?= 26
+  kBits @?= 816
+  split @?= 16
 
--- Large TB (1100 bytes): BG1, C=2, kDw=138
+-- Large TB (1100 bytes): BG1, C=2
+-- B=8800, B'=8824, C=ceil(8824/8424)=2, kBits=ceil(8824/2)=4412
+-- kDw=ceil(4412/32)=138, split=4412 mod 32 = 28
 test_cbParams_large :: TestTree
-test_cbParams_large = testCase "computeCbParams 1100 → (BG1,2,138)" $ do
-  let (bg, c, kDw) = computeCbParams 1100
-  bg   @?= BG1
-  c    @?= 2
-  kDw  @?= 138
+test_cbParams_large = testCase "computeCbParams 1100 → (BG1,2,138,4412,28)" $ do
+  let (bg, c, kDw, kBits, split) = computeCbParams 1100
+  bg    @?= BG1
+  c     @?= 2
+  kDw   @?= 138
+  kBits @?= 4412
+  split @?= 28
 
 -- Boundary: exactly 478 bytes → CRC-16 / BG2
 test_cbParams_boundary478 :: TestTree
 test_cbParams_boundary478 = testCase "computeCbParams 478 → BG2" $ do
-  let (bg, _, _) = computeCbParams 478
+  let (bg, _, _, _, _) = computeCbParams 478
   bg @?= BG2
 
 -- Boundary: 479 bytes → CRC-24A / BG1
 test_cbParams_boundary479 :: TestTree
 test_cbParams_boundary479 = testCase "computeCbParams 479 → BG1" $ do
-  let (bg, _, _) = computeCbParams 479
+  let (bg, _, _, _, _) = computeCbParams 479
   bg @?= BG1
+
+-- TB = 2103 bytes: was C=3 (bug), now C=2 (correct)
+-- B=16824, B'=16848, K_cb=8448, denom=8424
+-- C=ceil(16848/8424)=2
+test_cbParams_2103 :: TestTree
+test_cbParams_2103 = testCase "computeCbParams 2103 → (BG1,2,_,_,_)" $ do
+  let (bg, c, _, _, _) = computeCbParams 2103
+  bg @?= BG1
+  c  @?= 2
+
+-- TB = 2102 bytes: same boundary fix
+-- B=16816, B'=16840, C=ceil(16840/8424)=2
+test_cbParams_2102 :: TestTree
+test_cbParams_2102 = testCase "computeCbParams 2102 → (BG1,2,_,_,_)" $ do
+  let (bg, c, _, _, _) = computeCbParams 2102
+  bg @?= BG1
+  c  @?= 2
+
+-- Verify kBits and splitBit for a known case
+-- TB = 2100 bytes: B=16800, B'=16824, C=2, kBits=ceil(16824/2)=8412
+-- 8412 mod 32 = 28 (262×32=8384, 8412-8384=28)
+test_cbParams_kBits :: TestTree
+test_cbParams_kBits = testCase "computeCbParams 2100: kBits=8412, split=28" $ do
+  let (_, _, _, kBits, split) = computeCbParams 2100
+  kBits @?= 8412
+  split @?= 28
 
 -- =============================================================================
 -- parseTxDataDword integration tests
@@ -95,8 +128,8 @@ test_parseTxData_small = testCase "small TB: C=1, no CB CRC" $ do
   tbLenDwords tb @?= 26
 
 -- 476-byte TB: BG2, C=1 after Kcb threshold fix.
--- 476 bytes = 119 payload dwords, tbTotDw = 120, Kcb_BG2 = 120.
--- 120 > 120 is false → C = 1, kDw = 120.
+-- 476 bytes = 119 payload dwords, B'=3824, Kcb_BG2=3840.
+-- B' > K_cb is false → C = 1.
 -- Expected TB buffer layout:
 --   [0..118]  payload (119 dwords)
 --   [119]     TB CRC-16
@@ -114,6 +147,12 @@ test_parseTxData_large = testCase "large TB: C=2" $ do
   let st = runTxDataParser 1100
   tpCbNumCbs st @?= 2
 
+-- TB = 2103 bytes: C=2 (was C=3 bug with dword-granularity)
+test_parseTxData_2103 :: TestTree
+test_parseTxData_2103 = testCase "2103-byte TB: C=2 (not 3)" $ do
+  let st = runTxDataParser 2103
+  tpCbNumCbs st @?= 2
+
 -- =============================================================================
 -- Test group
 -- =============================================================================
@@ -125,10 +164,14 @@ cbSegTests = testGroup "NrCbSegment"
       , test_cbParams_large
       , test_cbParams_boundary478
       , test_cbParams_boundary479
+      , test_cbParams_2103
+      , test_cbParams_2102
+      , test_cbParams_kBits
       ]
   , testGroup "parseTxDataDword (CBS integration)"
       [ test_parseTxData_small
       , test_parseTxData_cbCrcInTbBuf
       , test_parseTxData_large
+      , test_parseTxData_2103
       ]
   ]

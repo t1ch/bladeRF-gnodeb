@@ -18,10 +18,10 @@ import Prelude
 import Test.Tasty
 import Test.Tasty.HUnit
 
-import Clash.Prelude (BitVector, toList)
+import Clash.Prelude (BitVector, toList, (++#))
 import GNodeBFAPITypes
 import FapiMsgTxData (parseTxDataDword)
-import NewRadioCRC (updateNrCrc, finalizeNrCrc)
+import NewRadioCRC (updateNrCrc, finalizeNrCrc, nrCrc24BStep24)
 
 -- =============================================================================
 -- CRC helpers (independent reference implementation)
@@ -146,7 +146,7 @@ test_476_c1_tbCrc_at_slot119 =
 -- =============================================================================
 --
 -- Synthetic TxDataParseState seeded directly into BP_TLV_DATA with:
---   tpCbNumCbs = 2, tpCbPayDw = 3, tpTlvLenDw = 6
+--   tpCbNumCbs = 2, tpCbPayDw = 3, tpCbSplitBit = 0, tpTlvLenDw = 6
 --   TB CRC type: CRC-24A (tpCrcState)
 --
 -- Feed 6 dwords of 0xDEADBEEF.  Expected buffer layout:
@@ -155,10 +155,11 @@ test_476_c1_tbCrc_at_slot119 =
 --   [3]      CB0 CRC-24B   = crc24B [0xDEADBEEF × 3]
 --   [4,5,6]  CB1 payload   (0xDEADBEEF × 3)
 --   [7]      TB  CRC-24A   = crc24A [0xDEADBEEF × 6]
---   [8]      CB1 CRC-24B   = crc24B ([0xDEADBEEF × 3] ++ [tbCrcDword])
+--   [8]      CB1 CRC-24B   = raw 24-bit CRC-24A fed through CRC-24B
+--                             (not 32-bit padded — fixes Issue 2)
 --   tbLenDwords = 9
 --
--- This directly verifies that the last CB's CRC-24B covers the TB CRC dword.
+-- This directly verifies that the last CB's CRC-24B covers the TB CRC bits.
 
 seedState :: TxDataParseState
 seedState = nullTxDataParseState
@@ -167,6 +168,8 @@ seedState = nullTxDataParseState
   , tpTlvDwRead    = 0
   , tpCbNumCbs     = 2
   , tpCbPayDw      = 3
+  , tpCbPayBits    = 96     -- 3 × 32 (dword-aligned)
+  , tpCbSplitBit   = 0      -- no intra-dword split
   , tpCbDwInBlock  = 0
   , tpCrcState     = nullNrCrcState { ncCrcType = NR_CRC24A }
   , tpCbCrcState   = nullNrCrcState { ncCrcType = NR_CRC24B }
@@ -186,8 +189,21 @@ expectedCb0CrcSeeded = crc24B (replicate 3 0xDEADBEEF)
 expectedTbCrcSeeded :: BitVector 32
 expectedTbCrcSeeded = crc24A (replicate 6 0xDEADBEEF)
 
+-- CB1 CRC-24B: accumulate CB1 payload, then feed raw 24-bit CRC-24A register
+-- (not the 32-bit padded finalizeNrCrc value — this is the Issue 2 fix).
 expectedCb1CrcSeeded :: BitVector 32
-expectedCb1CrcSeeded = crc24B (replicate 3 0xDEADBEEF ++ [expectedTbCrcSeeded])
+expectedCb1CrcSeeded =
+  let -- CRC-24B accumulator after CB1's 3 payload dwords
+      cb1St   = foldl updateNrCrc (nullNrCrcState { ncCrcType = NR_CRC24B })
+                      (replicate 3 0xDEADBEEF)
+      cb1Reg  = ncCrc24BReg cb1St
+      -- Raw 24-bit CRC-24A register (not padded to 32 bits)
+      tbSt    = foldl updateNrCrc (nullNrCrcState { ncCrcType = NR_CRC24A })
+                      (replicate 6 0xDEADBEEF)
+      tbRaw24 = ncCrc24AReg tbSt
+      -- Feed raw 24-bit register through CRC-24B step
+      final24 = nrCrc24BStep24 tbRaw24 cb1Reg
+  in final24 ++# (0 :: BitVector 8)
 
 test_seeded_c2_tbLenDwords :: TestTree
 test_seeded_c2_tbLenDwords =

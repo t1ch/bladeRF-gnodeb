@@ -331,7 +331,7 @@ data CbBaseGraph = BG1 | BG2 deriving (Show, Eq, Generic, NFDataX)
 --   denominator in the C computation (spec §5.2.2).  NOT the segmentation
 --   threshold — see bg1KcbDwords / bg2KcbDwords for that.
 --   BG1: floor((8448 − 24) / 32) = floor(8424 / 32) = 263
---   BG2: floor((3840 − 16) / 32) = floor(3816 / 32) = 119
+--   BG2: floor((3840 − 24) / 32) = floor(3816 / 32) = 119
 bg1BcbDwords :: Unsigned 16
 bg1BcbDwords = 263
 
@@ -401,7 +401,9 @@ data TxDataParseState = TxDataParseState
   , tpCrcState     :: NrCrcState    -- ^ Inline TB CRC accumulator
   -- CBS (computed in BP_TLV_HEADER, consumed in BP_TLV_DATA)
   , tpCbNumCbs     :: Unsigned 8    -- ^ C: total number of code blocks
-  , tpCbPayDw      :: Unsigned 16   -- ^ kDw: payload dwords per CB
+  , tpCbPayDw      :: Unsigned 16   -- ^ kDw: payload dwords per CB (boundary dword detection)
+  , tpCbPayBits    :: Unsigned 16   -- ^ kBits: per-CB segment bits from b
+  , tpCbSplitBit   :: Unsigned 6    -- ^ kBits mod 32 (0 = no intra-dword split)
   , tpCbDwInBlock  :: Unsigned 16   -- ^ Dwords written to current CB so far
   , tpCbCrcState   :: NrCrcState    -- ^ CRC-24B accumulator for current CB
   } deriving (Show, Eq, Generic, NFDataX)
@@ -422,6 +424,8 @@ nullTxDataParseState = TxDataParseState
   , tpCrcState     = nullNrCrcState
   , tpCbNumCbs     = 1
   , tpCbPayDw      = 0
+  , tpCbPayBits    = 0
+  , tpCbSplitBit   = 0
   , tpCbDwInBlock  = 0
   , tpCbCrcState   = nullNrCrcState
   }

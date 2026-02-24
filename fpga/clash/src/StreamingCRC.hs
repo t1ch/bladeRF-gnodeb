@@ -28,6 +28,8 @@
 module StreamingCRC
   ( -- * Combinational CRC step
     parallelCRCStep
+    -- * Range-gated CRC step
+  , rangeParallelCRCStep
     -- * Clocked streaming component
   , streamingCRC
   ) where
@@ -71,6 +73,42 @@ parallelCRCStep poly currentCrc dataChunk =
       let fb      = msb acc `xor` inBit
           shifted = shiftL acc 1
       in if fb == high then shifted `xor` poly else shifted
+
+-- =============================================================================
+-- Range-Gated Parallel CRC Step
+-- =============================================================================
+
+-- | Compute a CRC update over a sub-range of bits within a 32-bit dword.
+--
+--   @rangeParallelCRCStep poly crc startBit endBit dw@
+--
+--   Processes only bits @[startBit, endBit)@ of @dw@ through the CRC
+--   polynomial (MSB-first, bit 0 = MSB).  Bits outside the range are
+--   skipped — the accumulator passes through unchanged.
+--
+--   Clash unrolls this into 32 stages with per-stage comparator muxes:
+--   same combinational depth as a full 32-bit step.
+rangeParallelCRCStep
+  :: forall crcN
+   . KnownNat crcN
+  => BitVector crcN       -- ^ CRC polynomial (without leading 1)
+  -> BitVector crcN       -- ^ Current CRC accumulator
+  -> Unsigned 6           -- ^ startBit (inclusive, 0 = MSB)
+  -> Unsigned 6           -- ^ endBit (exclusive, 32 = process through LSB)
+  -> BitVector 32         -- ^ Data dword
+  -> BitVector crcN
+rangeParallelCRCStep poly crc startBit endBit dw =
+  foldl gatedStep crc (zip (indicesI :: Vec 32 (Index 32)) (bv2v dw))
+  where
+    gatedStep :: BitVector crcN -> (Index 32, Bit) -> BitVector crcN
+    gatedStep acc (idx, inBit) =
+      let idx6 = bitCoerce idx :: Unsigned 5
+          idxU = resize idx6   :: Unsigned 6
+      in if idxU >= startBit && idxU < endBit
+           then let fb      = msb acc `xor` inBit
+                    shifted = shiftL acc 1
+                in if fb == high then shifted `xor` poly else shifted
+           else acc
 
 -- =============================================================================
 -- Clocked Streaming CRC Component
